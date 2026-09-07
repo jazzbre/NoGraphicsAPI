@@ -42,8 +42,11 @@ constexpr uint64 gpu_address_offset_mask = (uint64{1} << gpu_address_offset_bits
 constexpr uint32 max_heap_id = (1u << 24) - 1;
 
 // Application descriptors occupy the front of the device heap so shader index zero is the
-// first descriptor the application writes. Internal linear-heap views grow down from the top.
+// first descriptor the application writes. Internal linear-heap views sit above them at
+// internal_descriptor_base + (heap id - 1) * 2, which is the index GpuPtr computes in
+// shader_platform.h; the two constants must stay equal.
 constexpr uint32 resource_descriptor_capacity = 65536;
+constexpr uint32 internal_descriptor_base = 32768;
 constexpr uint32 sampler_descriptor_capacity = 2048;
 
 [[nodiscard]] Error error_from_hresult(HRESULT result) noexcept
@@ -440,8 +443,7 @@ struct Device
     uint32 sampler_descriptor_size = 0;
     uint32 rtv_descriptor_size = 0;
     uint32 dsv_descriptor_size = 0;
-    uint32 resource_front = 0;                       // Next application descriptor slot.
-    uint32 resource_back = resource_descriptor_capacity; // Next internal descriptor pair, growing down.
+    uint32 resource_front = 0; // Next application descriptor slot.
     uint32 sampler_front = 0;
     uint32 rtv_front = 0;
     uint32 dsv_front = 0;
@@ -864,6 +866,19 @@ DeviceInit create_device(const DeviceDesc& desc) noexcept
 #if !defined(NDEBUG)
     state->device->QueryInterface(IID_PPV_ARGS(&state->info_queue));
     active_info_queue = state->info_queue;
+    if (state->info_queue)
+    {
+        // Textures carry no optimized clear value because the API takes clear values per pass,
+        // not per resource. The resulting clears are correct, only slower, so drop the advice.
+        D3D12_MESSAGE_ID denied[]{
+            D3D12_MESSAGE_ID_CLEARDEPTHSTENCILVIEW_MISMATCHINGCLEARVALUE,
+            D3D12_MESSAGE_ID_CLEARRENDERTARGETVIEW_MISMATCHINGCLEARVALUE,
+        };
+        D3D12_INFO_QUEUE_FILTER filter{};
+        filter.DenyList.NumIDs = static_cast<uint32>(sizeof(denied) / sizeof(denied[0]));
+        filter.DenyList.pIDList = denied;
+        state->info_queue->AddStorageFilterEntries(&filter);
+    }
 #endif
 
     const Error error = create_device_objects(*state, desc);
@@ -1077,13 +1092,13 @@ namespace
         require_hr(record->resource->Map(0, memory == MemoryType::readback ? nullptr : &read_range, &record->mapped));
     }
 
-    // Every linear heap is reachable from shaders through an adjacent SRV/UAV descriptor pair.
-    assert(device.resource_back >= device.resource_front + 2 && "exhausted the internal descriptor region");
-    device.resource_back -= 2;
-    record->shader_descriptor_index = device.resource_back;
+    // Every linear heap is reachable from shaders through an adjacent SRV/UAV descriptor pair
+    // whose index the shader derives from the heap id.
+    record->heap_id = device.register_heap(record);
+    record->shader_descriptor_index = internal_descriptor_base + (record->heap_id - 1) * 2;
+    assert(record->shader_descriptor_index + 1 < resource_descriptor_capacity && "exhausted the internal descriptor region");
     write_linear_heap_descriptors(device, *record);
 
-    record->heap_id = device.register_heap(record);
     record->owner = {.state = &device, .object = record};
     return {
         .range = {
@@ -1109,7 +1124,7 @@ namespace
     record->descriptor_count = count;
     if (texture_heap)
     {
-        assert(device.resource_front + count <= device.resource_back && "exhausted the application descriptor region");
+        assert(device.resource_front + count <= internal_descriptor_base && "exhausted the application descriptor region");
         record->descriptor_base = device.resource_front;
         device.resource_front += count;
     }

@@ -23,24 +23,30 @@
         get { return reinterpret<type>(nga_root_words); }                                                                                                      \
     }
 
-// Encoded NoGraphicsAPI address: [63:40] internal descriptor index, [39:0] byte offset.
-// A heap reserves an adjacent descriptor pair: the even index is its ByteAddressBuffer SRV,
-// the odd index its RWByteAddressBuffer UAV.
+// Encoded NoGraphicsAPI address: [63:40] one-based heap id, [39:0] byte offset.
+// Each heap reserves an adjacent descriptor pair above the application descriptors:
+// the first is its ByteAddressBuffer SRV, the second its RWByteAddressBuffer UAV.
+// The backend places those descriptors at the same index this arithmetic produces.
+static const uint nga_internal_descriptor_base = 32768;
+
 struct GpuPtr<T>
 {
     uint64_t address;
+
+    uint descriptor_index() { return nga_internal_descriptor_base + (uint(address >> 40) - 1) * 2; }
+    uint byte_offset() { return uint(address & 0xffffffffffull); }
 
     __subscript(uint index)->T
     {
         get
         {
-            ByteAddressBuffer buffer = ResourceDescriptorHeap[NonUniformResourceIndex(uint(address >> 40))];
-            return buffer.Load<T>(uint(address & 0xffffffffffull) + index * uint(sizeof(T)));
+            ByteAddressBuffer buffer = ResourceDescriptorHeap[NonUniformResourceIndex(descriptor_index())];
+            return buffer.Load<T>(byte_offset() + index * uint(sizeof(T)));
         }
         [nonmutating] set
         {
-            RWByteAddressBuffer buffer = ResourceDescriptorHeap[NonUniformResourceIndex(uint(address >> 40) + 1)];
-            buffer.Store<T>(uint(address & 0xffffffffffull) + index * uint(sizeof(T)), newValue);
+            RWByteAddressBuffer buffer = ResourceDescriptorHeap[NonUniformResourceIndex(descriptor_index() + 1)];
+            buffer.Store<T>(byte_offset() + index * uint(sizeof(T)), newValue);
         }
     }
 }
