@@ -175,11 +175,11 @@ int main()
     printf("Using %s\n", caps.device_name);
 
     // Shaders
-    const Span<uint32> simulation_spirv = read_spirv(NOGRAPHICSAPI_SIMULATION_COMPUTE_SPV_PATH);
-    const Span<uint32> gbuffer_mesh_spirv = read_spirv(NOGRAPHICSAPI_GBUFFER_MESH_SPV_PATH);
-    const Span<uint32> gbuffer_fragment_spirv = read_spirv(NOGRAPHICSAPI_GBUFFER_FRAGMENT_SPV_PATH);
-    const Span<uint32> deferred_vertex_spirv = read_spirv(NOGRAPHICSAPI_DEFERRED_VERTEX_SPV_PATH);
-    const Span<uint32> deferred_fragment_spirv = read_spirv(NOGRAPHICSAPI_DEFERRED_FRAGMENT_SPV_PATH);
+    const Span<uint32> simulation_spirv = read_shader_binary(NOGRAPHICSAPI_SIMULATION_COMPUTE_SHADER_PATH);
+    const Span<uint32> gbuffer_mesh_spirv = read_shader_binary(NOGRAPHICSAPI_GBUFFER_MESH_SHADER_PATH);
+    const Span<uint32> gbuffer_fragment_spirv = read_shader_binary(NOGRAPHICSAPI_GBUFFER_FRAGMENT_SHADER_PATH);
+    const Span<uint32> deferred_vertex_spirv = read_shader_binary(NOGRAPHICSAPI_DEFERRED_VERTEX_SHADER_PATH);
+    const Span<uint32> deferred_fragment_spirv = read_shader_binary(NOGRAPHICSAPI_DEFERRED_FRAGMENT_SHADER_PATH);
     if (!simulation_spirv.data || !gbuffer_mesh_spirv.data || !gbuffer_fragment_spirv.data || !deferred_vertex_spirv.data || !deferred_fragment_spirv.data)
     {
         free(deferred_fragment_spirv.data);

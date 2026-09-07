@@ -14,19 +14,19 @@
 
 using namespace gpu;
 
-Span<uint32> read_spirv(const char* path) noexcept
+Span<uint32> read_shader_binary(const char* path) noexcept
 {
     assert(path);
     FILE* file = fopen(path, "rb");
     if (!file)
     {
-        fprintf(stderr, "Failed to open SPIR-V file: %s\n", path);
+        fprintf(stderr, "Failed to open shader file: %s\n", path);
         return {};
     }
 
     if (fseek(file, 0, SEEK_END) != 0)
     {
-        fprintf(stderr, "Failed to read SPIR-V file: %s\n", path);
+        fprintf(stderr, "Failed to read shader file: %s\n", path);
         fclose(file);
         return {};
     }
@@ -34,7 +34,7 @@ Span<uint32> read_spirv(const char* path) noexcept
     if (byte_count < static_cast<long>(5 * sizeof(uint32)) ||
         byte_count % static_cast<long>(sizeof(uint32)) != 0)
     {
-        fprintf(stderr, "Invalid SPIR-V file size: %s\n", path);
+        fprintf(stderr, "Invalid shader file size: %s\n", path);
         fclose(file);
         return {};
     }
@@ -43,9 +43,10 @@ Span<uint32> read_spirv(const char* path) noexcept
     Span<uint32> code(static_cast<uint32*>(malloc(size_t(byte_count))), size_t(byte_count) / sizeof(uint32));
     const bool read_succeeded = fread(code.data, sizeof(uint32), code.size, file) == code.size;
     fclose(file);
-    if (!read_succeeded || code.data[0] != 0x07230203u)
+    // SPIR-V and DXIL containers are both word aligned; accept whichever the backend produced.
+    if (!read_succeeded || (code.data[0] != 0x07230203u && code.data[0] != 0x43425844u))
     {
-        fprintf(stderr, "Invalid SPIR-V file: %s\n", path);
+        fprintf(stderr, "Invalid shader file: %s\n", path);
         free(code.data);
         return {};
     }

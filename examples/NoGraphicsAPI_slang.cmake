@@ -1,5 +1,14 @@
 find_program(NOGRAPHICSAPI_SLANGC NAMES slangc REQUIRED)
-find_program(NOGRAPHICSAPI_SPIRV_VAL NAMES spirv-val REQUIRED)
+if(NOGRAPHICSAPI_BACKEND STREQUAL "vulkan")
+    find_program(NOGRAPHICSAPI_SPIRV_VAL NAMES spirv-val REQUIRED)
+endif()
+
+# Shaders are compiled for the one backend the library was built with.
+if(NOGRAPHICSAPI_BACKEND STREQUAL "vulkan")
+    set(NOGRAPHICSAPI_SHADER_SUFFIX "spv")
+else()
+    set(NOGRAPHICSAPI_SHADER_SUFFIX "dxil")
+endif()
 
 function(NoGraphicsAPI_require_tool_version program argument name minimum pattern)
     execute_process(
@@ -25,27 +34,48 @@ endfunction()
 NoGraphicsAPI_require_tool_version(
     "${NOGRAPHICSAPI_SLANGC}" -version Slang 2026.14.1
     "([0-9]+\\.[0-9]+(\\.[0-9]+)?)")
-NoGraphicsAPI_require_tool_version(
-    "${NOGRAPHICSAPI_SPIRV_VAL}" --version SPIRV-Tools 2026.3
-    "SPIRV-Tools v([0-9]+\\.[0-9]+)")
+if(NOGRAPHICSAPI_BACKEND STREQUAL "vulkan")
+    NoGraphicsAPI_require_tool_version(
+        "${NOGRAPHICSAPI_SPIRV_VAL}" --version SPIRV-Tools 2026.3
+        "SPIRV-Tools v([0-9]+\\.[0-9]+)")
+endif()
 
 function(NoGraphicsAPI_compile_slang output source entry stage)
     cmake_parse_arguments(SLANG "DESCRIPTOR_HEAP" "DEFINE" "DEPENDS" ${ARGN})
     set(options)
+    set(validate)
+    if(NOGRAPHICSAPI_BACKEND STREQUAL "vulkan")
+        # Push data holds the root structure directly, so it uses C layout.
+        set(target_options
+            -target spirv
+            -profile spirv_1_5
+            -emit-spirv-directly
+            -fvk-use-entrypoint-name
+            -DNGA_VULKAN=1)
+        set(validate COMMAND ${NOGRAPHICSAPI_SPIRV_VAL} --target-env vulkan1.4 --scalar-block-layout ${output})
+        if(SLANG_DESCRIPTOR_HEAP)
+            list(APPEND options -fvk-use-c-layout -capability spvDescriptorHeapEXT)
+        endif()
+        if(stage STREQUAL "mesh")
+            list(APPEND options -capability spvMeshShadingEXT)
+        endif()
+    else()
+        # NGA_ROOT unpacks the root words on D3D12, so no constant-buffer layout option applies.
+        set(target_options
+            -target dxil
+            -profile sm_6_6
+            -DNGA_D3D12=1)
+    endif()
+
     if(SLANG_DESCRIPTOR_HEAP)
         list(APPEND options
-            -fvk-use-c-layout
             -matrix-layout-row-major
-            -capability spvDescriptorHeapEXT
             -I ${CMAKE_CURRENT_SOURCE_DIR}
             -I ${PROJECT_SOURCE_DIR}/include
             -I ${PROJECT_SOURCE_DIR}/utility/include)
     endif()
     if(SLANG_DEFINE)
         list(APPEND options -D${SLANG_DEFINE}=1)
-    endif()
-    if(stage STREQUAL "mesh")
-        list(APPEND options -capability spvMeshShadingEXT)
     endif()
 
     get_filename_component(output_dir "${output}" DIRECTORY)
@@ -54,17 +84,12 @@ function(NoGraphicsAPI_compile_slang output source entry stage)
         COMMAND ${CMAKE_COMMAND} -E make_directory ${output_dir}
         COMMAND ${NOGRAPHICSAPI_SLANGC}
             ${source}
-            -target spirv
-            -profile spirv_1_5
-            -emit-spirv-directly
-            -fvk-use-entrypoint-name
-            -DNGA_VULKAN=1
+            ${target_options}
             ${options}
             -entry ${entry}
             -stage ${stage}
             -o ${output}
-        COMMAND ${NOGRAPHICSAPI_SPIRV_VAL}
-            --target-env vulkan1.4 --scalar-block-layout ${output}
+        ${validate}
         DEPENDS ${source} ${SLANG_DEPENDS}
         VERBATIM
         COMMENT "Compiling Slang ${stage} shader ${entry}"

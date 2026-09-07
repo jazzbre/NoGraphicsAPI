@@ -7,7 +7,7 @@
 #endif
 
 // Free the returned buffer after creating the PSO that uses it.
-gpu::Span<uint32> read_spirv(const char* path) noexcept;
+gpu::Span<uint32> read_shader_binary(const char* path) noexcept;
 bool read_binary_file(const char* path, gpu::Span<byte> data) noexcept;
 
 double example_time_seconds() noexcept;

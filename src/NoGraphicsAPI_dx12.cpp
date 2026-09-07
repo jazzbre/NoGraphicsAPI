@@ -186,6 +186,18 @@ struct FormatMapping
     return {};
 }
 
+// Flip-model swapchains reject _SRGB formats, so the buffers are created with the plain
+// format and the sRGB encoding is applied by the render target view instead.
+[[nodiscard]] DXGI_FORMAT map_swapchain_format(Format format) noexcept
+{
+    switch (format)
+    {
+    case Format::rgba8_srgb: return DXGI_FORMAT_R8G8B8A8_UNORM;
+    case Format::bgra8_srgb: return DXGI_FORMAT_B8G8R8A8_UNORM;
+    default: return map_format(format).view;
+    }
+}
+
 [[nodiscard]] D3D12_COMPARISON_FUNC map_compare(CompareOp compare) noexcept
 {
     switch (compare)
@@ -352,11 +364,35 @@ struct RenderView
     uint32 slot = 0;
 };
 
+// D3D12 bakes depth-stencil state into the pipeline while the API treats it as dynamic, so a
+// graphics PSO keeps its shaders and target formats and compiles one variant per state it sees.
+struct PSOVariant
+{
+    DepthStencilState state{};
+    ID3D12PipelineState* pipeline = nullptr;
+};
+
 struct PSO
 {
     Device* state = nullptr;
-    ID3D12PipelineState* pipeline = nullptr;
+    ID3D12PipelineState* pipeline = nullptr; // Compute pipelines have exactly one.
     bool compute = false;
+    bool mesh = false;
+
+    byte* first_stage = nullptr; // Vertex or mesh shader.
+    size_t first_stage_size = 0;
+    byte* fragment_stage = nullptr;
+    size_t fragment_stage_size = 0;
+
+    ColorTargetDesc color_targets[max_color_attachments]{};
+    uint32 color_target_count = 0;
+    Format depth_format = Format::undefined;
+    Format stencil_format = Format::undefined;
+    RasterizationState rasterization{};
+
+    PSOVariant* variants = nullptr;
+    uint32 variant_count = 0;
+    uint32 variant_capacity = 0;
 };
 
 struct Swapchain
@@ -379,6 +415,7 @@ struct CommandBuffer
     bool recording = false;
     bool rendering = false;
     const PSO* bound_pso = nullptr;
+    ID3D12PipelineState* bound_pipeline = nullptr;
     Swapchain* swapchain = nullptr;
     DepthStencilState depth_stencil{};
     RenderView* color_views[max_color_attachments]{};
@@ -1446,8 +1483,8 @@ Error recreate_swapchain(Swapchain& swapchain) noexcept
         return Error::none;
     }
 
-    const FormatMapping formats = map_format(swapchain.format);
-    if (formats.view == DXGI_FORMAT_UNKNOWN)
+    const DXGI_FORMAT buffer_format = map_swapchain_format(swapchain.format);
+    if (buffer_format == DXGI_FORMAT_UNKNOWN)
         return Error::unsupported;
 
     if (!swapchain.swapchain)
@@ -1455,7 +1492,7 @@ Error recreate_swapchain(Swapchain& swapchain) noexcept
         const DXGI_SWAP_CHAIN_DESC1 desc{
             .Width = extent.x,
             .Height = extent.y,
-            .Format = formats.view,
+            .Format = buffer_format,
             .SampleDesc = {.Count = 1},
             .BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT,
             .BufferCount = 2,
@@ -1477,7 +1514,7 @@ Error recreate_swapchain(Swapchain& swapchain) noexcept
     else
     {
         release_swapchain_views(swapchain);
-        const HRESULT result = swapchain.swapchain->ResizeBuffers(swapchain.image_count, extent.x, extent.y, formats.view, 0);
+        const HRESULT result = swapchain.swapchain->ResizeBuffers(swapchain.image_count, extent.x, extent.y, buffer_format, 0);
         if (FAILED(result))
             return error_from_hresult(result);
     }
@@ -1523,34 +1560,247 @@ SwapchainFrame acquire(Device* device) noexcept
 // Pipeline state
 // ---------------------------------------------------------------------------
 
+namespace
+{
+
+[[nodiscard]] D3D12_BLEND map_blend_factor(BlendFactor factor) noexcept
+{
+    switch (factor)
+    {
+    case BlendFactor::zero: return D3D12_BLEND_ZERO;
+    case BlendFactor::one: return D3D12_BLEND_ONE;
+    case BlendFactor::source_color: return D3D12_BLEND_SRC_COLOR;
+    case BlendFactor::one_minus_source_color: return D3D12_BLEND_INV_SRC_COLOR;
+    case BlendFactor::destination_color: return D3D12_BLEND_DEST_COLOR;
+    case BlendFactor::one_minus_destination_color: return D3D12_BLEND_INV_DEST_COLOR;
+    case BlendFactor::source_alpha: return D3D12_BLEND_SRC_ALPHA;
+    case BlendFactor::one_minus_source_alpha: return D3D12_BLEND_INV_SRC_ALPHA;
+    case BlendFactor::destination_alpha: return D3D12_BLEND_DEST_ALPHA;
+    case BlendFactor::one_minus_destination_alpha: return D3D12_BLEND_INV_DEST_ALPHA;
+    case BlendFactor::source_alpha_saturate: return D3D12_BLEND_SRC_ALPHA_SAT;
+    }
+    return D3D12_BLEND_ONE;
+}
+
+[[nodiscard]] D3D12_BLEND_OP map_blend_op(BlendOp operation) noexcept
+{
+    switch (operation)
+    {
+    case BlendOp::add: return D3D12_BLEND_OP_ADD;
+    case BlendOp::subtract: return D3D12_BLEND_OP_SUBTRACT;
+    case BlendOp::reverse_subtract: return D3D12_BLEND_OP_REV_SUBTRACT;
+    case BlendOp::minimum: return D3D12_BLEND_OP_MIN;
+    case BlendOp::maximum: return D3D12_BLEND_OP_MAX;
+    }
+    return D3D12_BLEND_OP_ADD;
+}
+
+[[nodiscard]] D3D12_STENCIL_OP map_stencil_op(StencilOp operation) noexcept
+{
+    switch (operation)
+    {
+    case StencilOp::keep: return D3D12_STENCIL_OP_KEEP;
+    case StencilOp::zero: return D3D12_STENCIL_OP_ZERO;
+    case StencilOp::replace: return D3D12_STENCIL_OP_REPLACE;
+    case StencilOp::increment_clamp: return D3D12_STENCIL_OP_INCR_SAT;
+    case StencilOp::decrement_clamp: return D3D12_STENCIL_OP_DECR_SAT;
+    case StencilOp::invert: return D3D12_STENCIL_OP_INVERT;
+    case StencilOp::increment_wrap: return D3D12_STENCIL_OP_INCR;
+    case StencilOp::decrement_wrap: return D3D12_STENCIL_OP_DECR;
+    }
+    return D3D12_STENCIL_OP_KEEP;
+}
+
+[[nodiscard]] D3D12_DEPTH_STENCILOP_DESC map_stencil_face(const StencilFaceState& face) noexcept
+{
+    return {
+        .StencilFailOp = map_stencil_op(face.fail),
+        .StencilDepthFailOp = map_stencil_op(face.depth_fail),
+        .StencilPassOp = map_stencil_op(face.pass),
+        .StencilFunc = map_compare(face.compare),
+    };
+}
+
+[[nodiscard]] D3D12_RASTERIZER_DESC map_rasterization(const RasterizationState& state) noexcept
+{
+    return {
+        .FillMode = D3D12_FILL_MODE_SOLID,
+        .CullMode = state.cull == CullMode::none ? D3D12_CULL_MODE_NONE : D3D12_CULL_MODE_BACK,
+        // Clockwise culling is expressed by which winding counts as front facing.
+        .FrontCounterClockwise = state.cull == CullMode::clockwise ? TRUE : FALSE,
+        .DepthBias = static_cast<int32>(state.depth_bias_constant),
+        .DepthBiasClamp = state.depth_bias_clamp,
+        .SlopeScaledDepthBias = state.depth_bias_slope,
+        .DepthClipEnable = TRUE,
+    };
+}
+
+[[nodiscard]] D3D12_BLEND_DESC map_blend(const ColorTargetDesc* targets, uint32 count) noexcept
+{
+    D3D12_BLEND_DESC blend{.IndependentBlendEnable = TRUE};
+    for (uint32 index = 0; index < count; ++index)
+    {
+        blend.RenderTarget[index] = {
+            .BlendEnable = targets[index].blend.enabled ? TRUE : FALSE,
+            .LogicOpEnable = FALSE,
+            .SrcBlend = map_blend_factor(targets[index].blend.color.source),
+            .DestBlend = map_blend_factor(targets[index].blend.color.destination),
+            .BlendOp = map_blend_op(targets[index].blend.color.operation),
+            .SrcBlendAlpha = map_blend_factor(targets[index].blend.alpha.source),
+            .DestBlendAlpha = map_blend_factor(targets[index].blend.alpha.destination),
+            .BlendOpAlpha = map_blend_op(targets[index].blend.alpha.operation),
+            .LogicOp = D3D12_LOGIC_OP_NOOP,
+            .RenderTargetWriteMask = targets[index].write_mask,
+        };
+    }
+    return blend;
+}
+
+[[nodiscard]] D3D12_DEPTH_STENCIL_DESC1 map_depth_stencil(const DepthStencilState& state) noexcept
+{
+    return {
+        .DepthEnable = state.depth_test ? TRUE : FALSE,
+        .DepthWriteMask = state.depth_write ? D3D12_DEPTH_WRITE_MASK_ALL : D3D12_DEPTH_WRITE_MASK_ZERO,
+        .DepthFunc = map_compare(state.depth_compare),
+        .StencilEnable = state.stencil_test ? TRUE : FALSE,
+        .StencilReadMask = state.stencil_read_mask,
+        .StencilWriteMask = state.stencil_write_mask,
+        .FrontFace = map_stencil_face(state.front),
+        .BackFace = map_stencil_face(state.back),
+        .DepthBoundsTestEnable = FALSE,
+    };
+}
+
+[[nodiscard]] byte* copy_shader_code(Span<const uint32> code, size_t& size) noexcept
+{
+    size = code.size * sizeof(uint32);
+    if (size == 0)
+        return nullptr;
+    byte* copy = static_cast<byte*>(malloc(size));
+    memcpy(copy, code.data, size);
+    return copy;
+}
+
+// Pipeline state stream subobjects must be individually aligned to a pointer boundary. The
+// trailing padding that alignment adds is part of the format D3D12 expects to walk.
+#pragma warning(push)
+#pragma warning(disable : 4324)
+template<typename T, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE Type>
+struct alignas(void*) StreamSubobject
+{
+    D3D12_PIPELINE_STATE_SUBOBJECT_TYPE type = Type;
+    T value{};
+};
+
+struct GraphicsPipelineStream
+{
+    StreamSubobject<ID3D12RootSignature*, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE> root_signature;
+    StreamSubobject<D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS> vertex;
+    StreamSubobject<D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS> mesh;
+    StreamSubobject<D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS> fragment;
+    StreamSubobject<D3D12_BLEND_DESC, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND> blend;
+    StreamSubobject<D3D12_RASTERIZER_DESC, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RASTERIZER> rasterizer;
+    StreamSubobject<D3D12_DEPTH_STENCIL_DESC1, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL1> depth_stencil;
+    StreamSubobject<DXGI_FORMAT, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_DEPTH_STENCIL_FORMAT> depth_format;
+    StreamSubobject<D3D12_RT_FORMAT_ARRAY, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_RENDER_TARGET_FORMATS> render_targets;
+    StreamSubobject<D3D12_PRIMITIVE_TOPOLOGY_TYPE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PRIMITIVE_TOPOLOGY> topology;
+    StreamSubobject<DXGI_SAMPLE_DESC, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_DESC> sample;
+};
+#pragma warning(pop)
+
+[[nodiscard]] ID3D12PipelineState* create_pipeline_variant(const PSO& pso, const DepthStencilState& state) noexcept
+{
+    GraphicsPipelineStream stream{};
+    stream.root_signature.value = pso.state->root_signature;
+    if (pso.mesh)
+        stream.mesh.value = {.pShaderBytecode = pso.first_stage, .BytecodeLength = pso.first_stage_size};
+    else
+        stream.vertex.value = {.pShaderBytecode = pso.first_stage, .BytecodeLength = pso.first_stage_size};
+    stream.fragment.value = {.pShaderBytecode = pso.fragment_stage, .BytecodeLength = pso.fragment_stage_size};
+    stream.blend.value = map_blend(pso.color_targets, pso.color_target_count);
+    stream.rasterizer.value = map_rasterization(pso.rasterization);
+    stream.depth_stencil.value = map_depth_stencil(state);
+
+    const Format depth_stencil_format = pso.depth_format != Format::undefined ? pso.depth_format : pso.stencil_format;
+    stream.depth_format.value = depth_stencil_format != Format::undefined ? map_format(depth_stencil_format).depth : DXGI_FORMAT_UNKNOWN;
+    if (stream.depth_format.value == DXGI_FORMAT_UNKNOWN)
+    {
+        stream.depth_stencil.value.DepthEnable = FALSE;
+        stream.depth_stencil.value.StencilEnable = FALSE;
+    }
+
+    stream.render_targets.value.NumRenderTargets = pso.color_target_count;
+    for (uint32 index = 0; index < pso.color_target_count; ++index)
+        stream.render_targets.value.RTFormats[index] = map_format(pso.color_targets[index].format).view;
+    stream.topology.value = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    stream.sample.value = {.Count = 1};
+
+    // A mesh pipeline must not declare a vertex stage, and vice versa.
+    const size_t stream_size = sizeof(stream);
+    D3D12_PIPELINE_STATE_STREAM_DESC desc{.SizeInBytes = stream_size, .pPipelineStateSubobjectStream = &stream};
+    ID3D12PipelineState* pipeline = nullptr;
+    require_hr(pso.state->device->CreatePipelineState(&desc, IID_PPV_ARGS(&pipeline)));
+    return pipeline;
+}
+
+[[nodiscard]] PSO* create_graphics_like_pso(Device* device, Span<const uint32> first_stage, Span<const uint32> fragment_stage,
+                                            Span<const ColorTargetDesc> color_targets, Format depth_format, Format stencil_format,
+                                            const RasterizationState& rasterization, bool mesh) noexcept
+{
+    assert(color_targets.size <= max_color_attachments && "too many color targets");
+    PSO* pso = new PSO{.state = device, .mesh = mesh};
+    pso->first_stage = copy_shader_code(first_stage, pso->first_stage_size);
+    pso->fragment_stage = copy_shader_code(fragment_stage, pso->fragment_stage_size);
+    pso->color_target_count = static_cast<uint32>(color_targets.size);
+    for (size_t index = 0; index < color_targets.size; ++index)
+        pso->color_targets[index] = color_targets.data[index];
+    pso->depth_format = depth_format;
+    pso->stencil_format = stencil_format;
+    pso->rasterization = rasterization;
+
+    // begin_render_pass starts every pass with depth and stencil disabled.
+    pso->pipeline = create_pipeline_variant(*pso, DepthStencilState{});
+    return pso;
+}
+
+} // namespace
+
 PSO* create_graphics_pso(Device* device, const GraphicsPSODesc& desc) noexcept
 {
     assert(device && "create_graphics_pso called with a null device");
-    (void)desc;
-    assert(false && "the D3D12 backend does not implement graphics PSOs yet");
-    return nullptr;
+    return create_graphics_like_pso(device, desc.vertex_spirv, desc.fragment_spirv, desc.color_targets, desc.depth_format, desc.stencil_format,
+                                    desc.rasterization, false);
 }
 
 PSO* create_mesh_pso(Device* device, const MeshPSODesc& desc) noexcept
 {
     assert(device && "create_mesh_pso called with a null device");
-    (void)desc;
-    assert(false && "the D3D12 backend does not implement mesh PSOs yet");
-    return nullptr;
+    return create_graphics_like_pso(device, desc.mesh_spirv, desc.fragment_spirv, desc.color_targets, desc.depth_format, desc.stencil_format,
+                                    desc.rasterization, true);
 }
 
 PSO* create_compute_pso(Device* device, Span<const uint32> compute_spirv) noexcept
 {
     assert(device && "create_compute_pso called with a null device");
-    (void)compute_spirv;
-    assert(false && "the D3D12 backend does not implement compute PSOs yet");
-    return nullptr;
+    PSO* pso = new PSO{.state = device, .compute = true};
+    pso->first_stage = copy_shader_code(compute_spirv, pso->first_stage_size);
+    const D3D12_COMPUTE_PIPELINE_STATE_DESC desc{
+        .pRootSignature = device->root_signature,
+        .CS = {.pShaderBytecode = pso->first_stage, .BytecodeLength = pso->first_stage_size},
+    };
+    require_hr(device->device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pso->pipeline)));
+    return pso;
 }
 
 void destroy_pso(PSO* pso) noexcept
 {
     if (!pso)
         return;
+    for (uint32 index = 0; index < pso->variant_count; ++index)
+        release(pso->variants[index].pipeline);
+    free(pso->variants);
+    free(pso->first_stage);
+    free(pso->fragment_stage);
     release(pso->pipeline);
     delete pso;
 }
@@ -1582,6 +1832,49 @@ void transition_texture(CommandBuffer& commands, Texture& texture, D3D12_BARRIER
     texture.layout = layout;
 }
 
+// The API sets depth-stencil state dynamically, so the matching pipeline variant is chosen at
+// draw time rather than when the PSO is bound.
+void resolve_graphics_pipeline(CommandBuffer& commands) noexcept
+{
+    const PSO* pso = commands.bound_pso;
+    assert(pso && !pso->compute && "a graphics PSO must be bound before drawing");
+
+    // DepthStencilState is a packed byte aggregate, so variants compare bitwise.
+    static_assert(sizeof(DepthStencilState) == 16, "DepthStencilState must stay padding free for bitwise variant lookup");
+    static constexpr DepthStencilState default_state{};
+
+    ID3D12PipelineState* pipeline = pso->pipeline;
+    if (memcmp(&commands.depth_stencil, &default_state, sizeof(DepthStencilState)) != 0)
+    {
+        PSO* mutable_pso = const_cast<PSO*>(pso);
+        pipeline = nullptr;
+        for (uint32 index = 0; index < pso->variant_count; ++index)
+        {
+            if (memcmp(&pso->variants[index].state, &commands.depth_stencil, sizeof(DepthStencilState)) == 0)
+            {
+                pipeline = pso->variants[index].pipeline;
+                break;
+            }
+        }
+        if (!pipeline)
+        {
+            if (mutable_pso->variant_count == mutable_pso->variant_capacity)
+            {
+                mutable_pso->variant_capacity = mutable_pso->variant_capacity == 0 ? 4u : mutable_pso->variant_capacity * 2u;
+                mutable_pso->variants = static_cast<PSOVariant*>(realloc(mutable_pso->variants, mutable_pso->variant_capacity * sizeof(PSOVariant)));
+            }
+            pipeline = create_pipeline_variant(*pso, commands.depth_stencil);
+            mutable_pso->variants[mutable_pso->variant_count++] = {.state = commands.depth_stencil, .pipeline = pipeline};
+        }
+    }
+
+    if (commands.bound_pipeline != pipeline)
+    {
+        commands.list->SetPipelineState(pipeline);
+        commands.bound_pipeline = pipeline;
+    }
+}
+
 void emit_root_data(CommandBuffer& commands, ByteSpan root) noexcept
 {
     if (root.size == 0)
@@ -1609,6 +1902,7 @@ CommandBuffer* begin_commands(Device* device) noexcept
     commands.recording = true;
     commands.rendering = false;
     commands.bound_pso = nullptr;
+    commands.bound_pipeline = nullptr;
     commands.swapchain = nullptr;
     commands.color_view_count = 0;
     commands.depth_view = nullptr;
@@ -1782,9 +2076,10 @@ void begin_render_pass(CommandBuffer* commands, const RenderingDesc& desc) noexc
     }
 
     // begin_render_pass resets a full render-area viewport and scissor and disables depth/stencil.
+    // The viewport height is negative so clip space matches Vulkan, where Y points down.
     const D3D12_VIEWPORT viewport{
-        .TopLeftX = 0.0f, .TopLeftY = 0.0f,
-        .Width = static_cast<float>(extent.x), .Height = static_cast<float>(extent.y),
+        .TopLeftX = 0.0f, .TopLeftY = static_cast<float>(extent.y),
+        .Width = static_cast<float>(extent.x), .Height = -static_cast<float>(extent.y),
         .MinDepth = 0.0f, .MaxDepth = 1.0f,
     };
     const D3D12_RECT scissor{.left = 0, .top = 0, .right = static_cast<LONG>(extent.x), .bottom = static_cast<LONG>(extent.y)};
@@ -1806,8 +2101,8 @@ void set_viewport(CommandBuffer* commands, const Viewport& viewport) noexcept
 {
     assert(commands && commands->recording && "set_viewport requires a recording command buffer");
     const D3D12_VIEWPORT value{
-        .TopLeftX = viewport.x, .TopLeftY = viewport.y,
-        .Width = viewport.width, .Height = viewport.height,
+        .TopLeftX = viewport.x, .TopLeftY = viewport.y + viewport.height,
+        .Width = viewport.width, .Height = -viewport.height,
         .MinDepth = viewport.min_depth, .MaxDepth = viewport.max_depth,
     };
     commands->list->RSSetViewports(1, &value);
@@ -1837,8 +2132,13 @@ void bind_pso(CommandBuffer* commands, const PSO* pso) noexcept
 {
     assert(commands && commands->recording && pso && pso->pipeline && "bind_pso received an invalid argument");
     commands->bound_pso = pso;
-    commands->list->SetPipelineState(pso->pipeline);
-    if (!pso->compute)
+    if (pso->compute)
+    {
+        commands->list->SetPipelineState(pso->pipeline);
+        commands->bound_pipeline = pso->pipeline;
+        return;
+    }
+    if (!pso->mesh)
         commands->list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
 }
 
@@ -1846,6 +2146,7 @@ void draw(CommandBuffer* commands, ByteSpan root, uint32 vertex_count, uint32 in
           uint32 first_instance) noexcept
 {
     assert(commands && commands->rendering && "draw requires an open render pass");
+    resolve_graphics_pipeline(*commands);
     emit_root_data(*commands, root);
     commands->list->DrawInstanced(vertex_count, instance_count, first_vertex, first_instance);
 }
@@ -1861,6 +2162,7 @@ void draw_indexed(CommandBuffer* commands, ByteSpan root, GpuRange indices, Inde
         .Format = type == IndexType::uint16 ? DXGI_FORMAT_R16_UINT : DXGI_FORMAT_R32_UINT,
     };
     commands->list->IASetIndexBuffer(&view);
+    resolve_graphics_pipeline(*commands);
     emit_root_data(*commands, root);
     commands->list->DrawIndexedInstanced(index_count, instance_count, first_index, vertex_offset, first_instance);
 }
@@ -1893,8 +2195,10 @@ void dispatch_indirect(CommandBuffer* commands, ByteSpan root, GpuRange argument
 
 void draw_meshlets(CommandBuffer* commands, ByteSpan root, uint32x3 group_count) noexcept
 {
-    (void)commands; (void)root; (void)group_count;
-    assert(false && "the D3D12 backend does not implement mesh shaders yet");
+    assert(commands && commands->rendering && "draw_meshlets requires an open render pass");
+    resolve_graphics_pipeline(*commands);
+    emit_root_data(*commands, root);
+    commands->list->DispatchMesh(group_count.x, group_count.y, group_count.z);
 }
 
 void draw_meshlets_indirect(CommandBuffer* commands, ByteSpan root, GpuRange arguments, uint32 draw_count, uint32 stride) noexcept
