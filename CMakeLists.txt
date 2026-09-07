@@ -71,7 +71,7 @@ if(NOGRAPHICSAPI_BACKEND STREQUAL "vulkan")
         PRIVATE Vulkan::Vulkan
     )
 else()
-    target_link_libraries(NoGraphicsAPI PRIVATE d3d12 dxgi)
+    target_link_libraries(NoGraphicsAPI PRIVATE d3d12 dxgi user32)
 endif()
 NoGraphicsAPI_disable_exceptions(NoGraphicsAPI)
 
