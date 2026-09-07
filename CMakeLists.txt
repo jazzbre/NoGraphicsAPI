@@ -30,7 +30,24 @@ function(NoGraphicsAPI_disable_exceptions target)
     endif()
 endfunction()
 
-find_package(Vulkan 1.4.357 REQUIRED)
+# Exactly one backend is compiled into the library; there is no runtime backend selection.
+set(NOGRAPHICSAPI_BACKEND "vulkan" CACHE STRING "Graphics backend to build: vulkan or d3d12")
+set_property(CACHE NOGRAPHICSAPI_BACKEND PROPERTY STRINGS vulkan d3d12)
+
+if(NOGRAPHICSAPI_BACKEND STREQUAL "vulkan")
+    set(NoGraphicsAPI_backend_source src/NoGraphicsAPI.cpp)
+elseif(NOGRAPHICSAPI_BACKEND STREQUAL "d3d12")
+    if(NOT WIN32)
+        message(FATAL_ERROR "NOGRAPHICSAPI_BACKEND=d3d12 requires Windows")
+    endif()
+    set(NoGraphicsAPI_backend_source src/NoGraphicsAPI_dx12.cpp)
+else()
+    message(FATAL_ERROR "NOGRAPHICSAPI_BACKEND must be vulkan or d3d12, got '${NOGRAPHICSAPI_BACKEND}'")
+endif()
+
+if(NOGRAPHICSAPI_BACKEND STREQUAL "vulkan")
+    find_package(Vulkan 1.4.357 REQUIRED)
+endif()
 
 add_library(NoGraphicsAPI STATIC
     include/NoGraphicsAPI/types.h
@@ -38,7 +55,7 @@ add_library(NoGraphicsAPI STATIC
     include/NoGraphicsAPI/traits.hpp
     include/NoGraphicsAPI/bit.hpp
     include/NoGraphicsAPI/NoGraphicsAPI.hpp
-    src/NoGraphicsAPI.cpp
+    ${NoGraphicsAPI_backend_source}
 )
 add_library(NoGraphicsAPI::NoGraphicsAPI ALIAS NoGraphicsAPI)
 set_target_properties(NoGraphicsAPI PROPERTIES EXPORT_NAME NoGraphicsAPI)
@@ -48,10 +65,14 @@ target_include_directories(NoGraphicsAPI PUBLIC
     $<BUILD_INTERFACE:${PROJECT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
-target_link_libraries(NoGraphicsAPI
-    PUBLIC Vulkan::Headers
-    PRIVATE Vulkan::Vulkan
-)
+if(NOGRAPHICSAPI_BACKEND STREQUAL "vulkan")
+    target_link_libraries(NoGraphicsAPI
+        PUBLIC Vulkan::Headers
+        PRIVATE Vulkan::Vulkan
+    )
+else()
+    target_link_libraries(NoGraphicsAPI PRIVATE d3d12 dxgi)
+endif()
 NoGraphicsAPI_disable_exceptions(NoGraphicsAPI)
 
 if(MSVC)
@@ -119,16 +140,21 @@ install(FILES
 )
 
 if(CMAKE_GENERATOR MATCHES "^Visual Studio" AND NOGRAPHICSAPI_BUILD_EXAMPLES)
-    cmake_path(GET Vulkan_INCLUDE_DIR PARENT_PATH vulkan_sdk_dir)
+    if(NOGRAPHICSAPI_BACKEND STREQUAL "vulkan")
+        cmake_path(GET Vulkan_INCLUDE_DIR PARENT_PATH vulkan_sdk_dir)
+    endif()
     foreach(example_target IN ITEMS
             example_triangle
             example_cube
             example_deferred_renderer)
         get_target_property(example_binary_dir ${example_target} BINARY_DIR)
         set_target_properties(${example_target} PROPERTIES
-            VS_DEBUGGER_WORKING_DIRECTORY "${example_binary_dir}"
-            VS_DEBUGGER_ENVIRONMENT
-                "VK_LAYER_PATH=${vulkan_sdk_dir}/Bin\nVK_LOADER_LAYERS_DISABLE=~implicit~")
+            VS_DEBUGGER_WORKING_DIRECTORY "${example_binary_dir}")
+        if(NOGRAPHICSAPI_BACKEND STREQUAL "vulkan")
+            set_target_properties(${example_target} PROPERTIES
+                VS_DEBUGGER_ENVIRONMENT
+                    "VK_LAYER_PATH=${vulkan_sdk_dir}/Bin\nVK_LOADER_LAYERS_DISABLE=~implicit~")
+        endif()
     endforeach()
 
     set_property(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
