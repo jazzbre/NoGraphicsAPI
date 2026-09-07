@@ -81,6 +81,13 @@ void require_hr(HRESULT result) noexcept
 
 void assert_hr(HRESULT result) noexcept
 {
+#if !defined(NDEBUG)
+    if (FAILED(result))
+    {
+        drain_debug_messages(active_info_queue);
+        fprintf(stderr, "NoGraphicsAPI: D3D12 call failed with 0x%08lx\n", static_cast<unsigned long>(result));
+    }
+#endif
     assert(SUCCEEDED(result));
     (void)result;
 }
@@ -270,26 +277,6 @@ struct FormatMapping
     if ((bits & static_cast<uint64>(Stage::transfer)) != 0) sync |= D3D12_BARRIER_SYNC_COPY;
     // Stage::host has no D3D12 sync scope; queue submission already orders host writes.
     return sync;
-}
-
-[[nodiscard]] D3D12_BARRIER_ACCESS map_access(Access access) noexcept
-{
-    const uint64 bits = static_cast<uint64>(access);
-    if (bits == 0)
-        return D3D12_BARRIER_ACCESS_NO_ACCESS;
-
-    D3D12_BARRIER_ACCESS result = D3D12_BARRIER_ACCESS_COMMON;
-    if ((bits & static_cast<uint64>(Access::transfer_read)) != 0) result |= D3D12_BARRIER_ACCESS_COPY_SOURCE;
-    if ((bits & static_cast<uint64>(Access::transfer_write)) != 0) result |= D3D12_BARRIER_ACCESS_COPY_DEST;
-    if ((bits & static_cast<uint64>(Access::shader_read)) != 0) result |= D3D12_BARRIER_ACCESS_SHADER_RESOURCE;
-    if ((bits & static_cast<uint64>(Access::shader_write)) != 0) result |= D3D12_BARRIER_ACCESS_UNORDERED_ACCESS;
-    if ((bits & static_cast<uint64>(Access::color_read)) != 0) result |= D3D12_BARRIER_ACCESS_RENDER_TARGET;
-    if ((bits & static_cast<uint64>(Access::color_write)) != 0) result |= D3D12_BARRIER_ACCESS_RENDER_TARGET;
-    if ((bits & static_cast<uint64>(Access::depth_stencil_read)) != 0) result |= D3D12_BARRIER_ACCESS_DEPTH_STENCIL_READ;
-    if ((bits & static_cast<uint64>(Access::depth_stencil_write)) != 0) result |= D3D12_BARRIER_ACCESS_DEPTH_STENCIL_WRITE;
-    if ((bits & static_cast<uint64>(Access::indirect_read)) != 0) result |= D3D12_BARRIER_ACCESS_INDIRECT_ARGUMENT;
-    if ((bits & static_cast<uint64>(Access::index_read)) != 0) result |= D3D12_BARRIER_ACCESS_INDEX_BUFFER;
-    return result;
 }
 
 } // namespace
@@ -1294,9 +1281,9 @@ Texture* create_texture(Device* device, const TextureDesc& desc, const TextureHe
     assert(formats.resource != DXGI_FORMAT_UNKNOWN && "texture format is not supported by the D3D12 backend");
     const D3D12_RESOURCE_DESC1 resource_desc = make_texture_desc(desc, formats);
 
-    Texture* texture = new Texture{.state = device, .desc = desc, .formats = formats, .layout = D3D12_BARRIER_LAYOUT_COMMON};
-    require_hr(device->device->CreatePlacedResource2(heap.owner->heap, offset, &resource_desc, D3D12_BARRIER_LAYOUT_COMMON, nullptr, 0, nullptr,
-                                                     IID_PPV_ARGS(&texture->resource)));
+    Texture* texture = new Texture{.state = device, .desc = desc, .formats = formats, .layout = D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_COMMON};
+    require_hr(device->device->CreatePlacedResource2(heap.owner->heap, offset, &resource_desc, D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_COMMON, nullptr, 0,
+                                                     nullptr, IID_PPV_ARGS(&texture->resource)));
     return texture;
 }
 
@@ -1832,6 +1819,7 @@ void transition_texture(CommandBuffer& commands, Texture& texture, D3D12_BARRIER
 {
     if (texture.layout == layout)
         return;
+    assert(commands.list && "texture transitions require a recording command buffer");
     const D3D12_TEXTURE_BARRIER barrier{
         .SyncBefore = D3D12_BARRIER_SYNC_ALL,
         .SyncAfter = sync,
@@ -1964,7 +1952,6 @@ void copy_memory_to_texture(CommandBuffer* commands, GpuRange source, Texture* d
 {
     assert(commands && commands->recording && destination && "copy_memory_to_texture received an invalid argument");
     const DecodedRange from = decode_gpu_range(*commands->state, source);
-    transition_texture(*commands, *destination, D3D12_BARRIER_LAYOUT_COPY_DEST, D3D12_BARRIER_SYNC_COPY, D3D12_BARRIER_ACCESS_COPY_DEST);
 
     const uint32 slice_count = copy.slice_count != 0 ? copy.slice_count : destination->desc.layer_count - copy.base_slice;
     const D3D12_RESOURCE_DESC resource_desc = destination->resource->GetDesc();
@@ -1996,7 +1983,6 @@ void copy_texture_to_memory(CommandBuffer* commands, Texture* source, GpuRange d
 {
     assert(commands && commands->recording && source && "copy_texture_to_memory received an invalid argument");
     const DecodedRange to = decode_gpu_range(*commands->state, destination);
-    transition_texture(*commands, *source, D3D12_BARRIER_LAYOUT_COPY_SOURCE, D3D12_BARRIER_SYNC_COPY, D3D12_BARRIER_ACCESS_COPY_SOURCE);
 
     const uint32 slice_count = copy.slice_count != 0 ? copy.slice_count : source->desc.layer_count - copy.base_slice;
     const D3D12_RESOURCE_DESC resource_desc = source->resource->GetDesc();
@@ -2028,11 +2014,17 @@ void barrier(CommandBuffer* commands, Stage before, Access before_access, Stage 
 {
     assert(commands && commands->recording && "barrier requires a recording command buffer");
     // NoGraphicsAPI exposes no resource lists, so every explicit barrier is a global barrier.
+    // D3D12 restricts which access bits a global barrier may name and requires them to agree
+    // with both the stage scopes and the resource layouts, none of which this call can know.
+    // Common access is the conservative choice that is always legal; the stage masks still
+    // express the actual dependency, and attachment layouts move inside the render pass.
+    (void)before_access;
+    (void)after_access;
     const D3D12_GLOBAL_BARRIER global{
         .SyncBefore = map_sync(before),
         .SyncAfter = map_sync(after),
-        .AccessBefore = map_access(before_access),
-        .AccessAfter = map_access(after_access),
+        .AccessBefore = D3D12_BARRIER_ACCESS_COMMON,
+        .AccessAfter = D3D12_BARRIER_ACCESS_COMMON,
     };
     const D3D12_BARRIER_GROUP group{.Type = D3D12_BARRIER_TYPE_GLOBAL, .NumBarriers = 1, .pGlobalBarriers = &global};
     commands->list->Barrier(1, &group);
@@ -2107,6 +2099,16 @@ void begin_render_pass(CommandBuffer* commands, const RenderingDesc& desc) noexc
 void end_render_pass(CommandBuffer* commands) noexcept
 {
     assert(commands && commands->rendering && "end_render_pass requires an open render pass");
+    for (uint32 index = 0; index < commands->color_view_count; ++index)
+    {
+        transition_texture(*commands, *commands->color_views[index]->texture, D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_COMMON, D3D12_BARRIER_SYNC_ALL,
+                           D3D12_BARRIER_ACCESS_COMMON);
+    }
+    if (commands->depth_view)
+    {
+        transition_texture(*commands, *commands->depth_view->texture, D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_COMMON, D3D12_BARRIER_SYNC_ALL,
+                           D3D12_BARRIER_ACCESS_COMMON);
+    }
     commands->rendering = false;
     commands->color_view_count = 0;
     commands->depth_view = nullptr;
