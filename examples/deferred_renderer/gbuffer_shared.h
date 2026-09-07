@@ -4,7 +4,7 @@
 
 struct GBufferRoot
 {
-    ObjectData* objects;
+    GPU_PTR(ObjectData) objects;
     float4x4 view_projection;
     float3x4 orientation;
 };

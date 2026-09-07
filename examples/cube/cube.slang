@@ -1,6 +1,6 @@
 #include "cube_shared.h"
 
-[[vk::push_constant]] ConstantBuffer<CubeRootArguments> root;
+NGA_ROOT(CubeRootArguments, root);
 
 struct VertexOutput
 {

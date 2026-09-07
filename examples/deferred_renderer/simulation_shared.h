@@ -4,7 +4,7 @@
 
 struct SimulationRoot
 {
-    ObjectData* objects;
+    GPU_PTR(ObjectData) objects;
     float delta_seconds;
 };
 

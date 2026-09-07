@@ -58,6 +58,7 @@ function(NoGraphicsAPI_compile_slang output source entry stage)
             -profile spirv_1_5
             -emit-spirv-directly
             -fvk-use-entrypoint-name
+            -DNGA_VULKAN=1
             ${options}
             -entry ${entry}
             -stage ${stage}

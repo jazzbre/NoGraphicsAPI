@@ -6,7 +6,7 @@ struct FullscreenVertex
     float3 world_ray : TEXCOORD0;
 };
 
-[[vk::push_constant]] ConstantBuffer<DeferredLightingRoot> root;
+NGA_ROOT(DeferredLightingRoot, root);
 
 [shader("vertex")]
 FullscreenVertex vertexMain(uint vertex_index : SV_VertexID)

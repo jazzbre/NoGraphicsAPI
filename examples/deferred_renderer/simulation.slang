@@ -1,6 +1,6 @@
 #include "simulation_shared.h"
 
-[[vk::push_constant]] ConstantBuffer<SimulationRoot> root;
+NGA_ROOT(SimulationRoot, root);
 
 [shader("compute")]
 [numthreads(simulation_thread_count, 1, 1)]

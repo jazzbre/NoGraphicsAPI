@@ -7,7 +7,7 @@ struct GBufferVertexOutput
     float3 world_normal : NORMAL0;
 };
 
-[[vk::push_constant]] ConstantBuffer<GBufferRoot> root;
+NGA_ROOT(GBufferRoot, root);
 
 [shader("mesh")]
 [outputtopology("triangle")]

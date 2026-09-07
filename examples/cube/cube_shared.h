@@ -1,5 +1,6 @@
 #pragma once
 
+#include <NoGraphicsAPIUtility/shader_platform.h>
 #include <NoGraphicsAPIUtility/shader_types.h>
 
 struct CubeVertex
@@ -10,6 +11,6 @@ struct CubeVertex
 
 struct CubeRootArguments
 {
-    CubeVertex* vertices;
+    GPU_PTR(CubeVertex) vertices;
     float4x4 transform;
 };
