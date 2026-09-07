@@ -57,7 +57,7 @@ BumpAllocator& BumpAllocator::operator=(BumpAllocator&& other) noexcept
 GpuCpuRange<byte> BumpAllocator::allocate(uint64 byte_size) noexcept
 {
     assert(byte_size != 0);
-    if (byte_size == 0 || offset_ > storage_.size || byte_size > storage_.size - offset_)
+    if (byte_size > storage_.size - offset_)
         return {};
 
     const GpuCpuRange<byte> allocation{
@@ -81,7 +81,7 @@ GpuCpuRange<byte> BumpAllocator::allocate_atomic(uint64 byte_size) noexcept
 #endif
     for (;;)
     {
-        if (byte_size == 0 || allocation_offset > storage_.size || byte_size > storage_.size - allocation_offset)
+        if (byte_size > storage_.size - allocation_offset)
             return {};
 
         const uint64 remaining = storage_.size - allocation_offset;

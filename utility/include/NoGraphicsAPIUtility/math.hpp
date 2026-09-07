@@ -49,31 +49,19 @@ namespace NoGraphicsAPI_math_detail {
 		return result;
 	}
 
-	inline __m128 linear_combination(__m128 coefficients,
-	                                 __m128 row0,
-	                                 __m128 row1,
-	                                 __m128 row2,
-	                                 __m128 row3) noexcept {
+	inline __m128 linear_combination(__m128 coefficients, __m128 row0, __m128 row1, __m128 row2, __m128 row3) noexcept {
 		__m128 result = _mm_mul_ps(_mm_permute_ps(coefficients, 0x00), row0);
 		result = _mm_fmadd_ps(_mm_permute_ps(coefficients, 0x55), row1, result);
 		result = _mm_fmadd_ps(_mm_permute_ps(coefficients, 0xaa), row2, result);
 		return _mm_fmadd_ps(_mm_permute_ps(coefficients, 0xff), row3, result);
 	}
 
-	inline __m128 linear_combination(const float4& coefficients,
-	                                 const float4& row0,
-	                                 const float4& row1,
-	                                 const float4& row2,
-	                                 const float4& row3) noexcept {
+	inline __m128 linear_combination(const float4& coefficients, const float4& row0, const float4& row1, const float4& row2, const float4& row3) noexcept {
 		return linear_combination(
 			load(coefficients), load(row0), load(row1), load(row2), load(row3));
 	}
 
-	inline __m256 linear_combination(__m256 coefficients,
-	                                 __m256 row0,
-	                                 __m256 row1,
-	                                 __m256 row2,
-	                                 __m256 row3) noexcept {
+	inline __m256 linear_combination(__m256 coefficients, __m256 row0, __m256 row1, __m256 row2, __m256 row3) noexcept {
 		__m256 result = _mm256_mul_ps(_mm256_permute_ps(coefficients, 0x00), row0);
 		result = _mm256_fmadd_ps(_mm256_permute_ps(coefficients, 0x55), row1, result);
 		result = _mm256_fmadd_ps(_mm256_permute_ps(coefficients, 0xaa), row2, result);
@@ -588,7 +576,7 @@ namespace math {
 #	undef NOGRAPHICSAPI_COMPONENT_MATH
 
 	constexpr float abs(float value) noexcept {
-		return value < 0.0f ? -value : value;
+		return __builtin_bit_cast(float, __builtin_bit_cast(uint32, value) & 0x7fffffffu);
 	}
 	constexpr int32 abs(int32 value) noexcept {
 		return value < 0 ? -value : value;

@@ -29,8 +29,7 @@ uint32 find_lowest_set_bit(uint32 bits, uint32 first_bit) noexcept
     if (first_bit >= 32)
         return invalid_bin;
 
-    if (first_bit != 0)
-        bits &= ~((1u << first_bit) - 1);
+    bits &= ~uint32{0} << first_bit;
     return bits == 0 ? invalid_bin : detail::count_trailing_zeros(bits);
 }
 
@@ -41,18 +40,13 @@ byte* offset_pointer(byte* pointer, uint64 offset) noexcept
     return reinterpret_cast<byte*>(reinterpret_cast<uintptr>(pointer) + offset);
 }
 
-uint64 element_count(uint64 byte_size, uint64 element_size) noexcept
-{
-    return 1 + (byte_size - 1) / element_size;
-}
-
 uint64 validate_storage(GpuCpuRange<byte> storage) noexcept
 {
     assert(storage.cpu || storage.gpu);
     assert(storage.size <= HeapAllocator::maximum_size);
     assert((!storage.cpu || reinterpret_cast<uintptr>(storage.cpu) % HeapAllocator::alignment == 0) &&
            (!storage.gpu || reinterpret_cast<uintptr>(storage.gpu) % HeapAllocator::alignment == 0));
-    return storage.size <= HeapAllocator::maximum_size ? storage.size : HeapAllocator::maximum_size;
+    return storage.size;
 }
 
 } // namespace
@@ -64,7 +58,7 @@ HeapAllocator::RangeAllocator::RangeAllocator(uint64 byte_size, uint32 allocatio
     assert(allocation_limit != 0 && allocation_limit <= maximum_allocation_count);
     const uint64 element_capacity = byte_size / element_size;
     assert(element_capacity <= 0xffffffffu);
-    capacity = static_cast<uint32>(element_capacity <= 0xffffffffu ? element_capacity : 0xffffffffu);
+    capacity = static_cast<uint32>(element_capacity);
     max_allocations = allocation_limit;
     node_capacity = allocation_limit * 2 + 1;
     nodes = new Node[node_capacity];
@@ -108,13 +102,6 @@ void HeapAllocator::RangeAllocator::move_from(RangeAllocator& other) noexcept
     nodes = other.nodes;
     free_nodes = other.free_nodes;
 
-    other.element_size = 0;
-    other.capacity = 0;
-    other.max_allocations = 0;
-    other.allocation_count = 0;
-    other.node_capacity = 0;
-    other.free_node_count = 0;
-    other.used_top_bins = 0;
     other.nodes = nullptr;
     other.free_nodes = nullptr;
 }
@@ -185,10 +172,10 @@ void HeapAllocator::RangeAllocator::remove_free_node(NodeIndex node_index) noexc
 HeapAllocator::Range HeapAllocator::RangeAllocator::allocate(uint64 byte_size) noexcept
 {
     assert(byte_size != 0);
-    if (!nodes || byte_size == 0 || allocation_count == max_allocations)
+    if (!nodes || allocation_count == max_allocations)
         return {};
 
-    const uint64 requested_elements = element_count(byte_size, element_size);
+    const uint64 requested_elements = 1 + (byte_size - 1) / element_size;
     if (requested_elements > capacity)
         return {};
     const uint32 size = static_cast<uint32>(requested_elements);
@@ -197,23 +184,23 @@ HeapAllocator::Range HeapAllocator::RangeAllocator::allocate(uint64 byte_size) n
     while (node_index != unused_node && nodes[node_index].size < size)
         node_index = nodes[node_index].bin_next;
 
-    const uint32 minimum_bin_index = approximate_bin_index + 1;
-    uint32 top_bin_index = minimum_bin_index / bins_per_leaf;
-    uint32 leaf_bin_index = invalid_bin;
-
-    if (node_index == unused_node && top_bin_index < top_bin_count && (used_top_bins & (1u << top_bin_index)) != 0)
-        leaf_bin_index = find_lowest_set_bit(used_leaf_bins[top_bin_index], minimum_bin_index % bins_per_leaf);
-
-    if (node_index == unused_node && leaf_bin_index == invalid_bin)
-    {
-        top_bin_index = find_lowest_set_bit(used_top_bins, top_bin_index + 1);
-        if (top_bin_index == invalid_bin)
-            return {};
-        leaf_bin_index = detail::count_trailing_zeros(static_cast<uint32>(used_leaf_bins[top_bin_index]));
-    }
-
     if (node_index == unused_node)
+    {
+        const uint32 minimum_bin_index = approximate_bin_index + 1;
+        uint32 top_bin_index = minimum_bin_index / bins_per_leaf;
+        uint32 leaf_bin_index = invalid_bin;
+        if (top_bin_index < top_bin_count)
+            leaf_bin_index = find_lowest_set_bit(used_leaf_bins[top_bin_index], minimum_bin_index % bins_per_leaf);
+
+        if (leaf_bin_index == invalid_bin)
+        {
+            top_bin_index = find_lowest_set_bit(used_top_bins, top_bin_index + 1);
+            if (top_bin_index == invalid_bin)
+                return {};
+            leaf_bin_index = detail::count_trailing_zeros(static_cast<uint32>(used_leaf_bins[top_bin_index]));
+        }
         node_index = bin_indices[top_bin_index * bins_per_leaf + leaf_bin_index];
+    }
     Node& node = nodes[node_index];
     const uint32 original_size = node.size;
     const NodeIndex original_next_neighbor = node.neighbor_next;
@@ -243,15 +230,9 @@ HeapAllocator::Range HeapAllocator::RangeAllocator::allocate(uint64 byte_size) n
 
 void HeapAllocator::RangeAllocator::free(NodeIndex token) noexcept
 {
-    const bool valid_token = nodes && token < node_capacity;
-    assert(valid_token);
-    if (!valid_token)
-        return;
-
+    assert(nodes && token < node_capacity);
     Node& node = nodes[token];
     assert(node.used);
-    if (!node.used)
-        return;
 
     if (node.neighbor_previous != unused_node && !nodes[node.neighbor_previous].used)
     {

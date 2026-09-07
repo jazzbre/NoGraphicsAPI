@@ -22,22 +22,18 @@ struct Span
     constexpr Span(T (&values)[Count]) noexcept : data(values), size(Count) {}
 
     template<typename U>
-    constexpr Span(Span<U> values) noexcept
-        requires(detail::is_same_v<detail::remove_cv_t<U>, detail::remove_cv_t<T>> && detail::is_convertible_v<U*, T*>)
+    constexpr Span(Span<U> values) noexcept requires(detail::is_same_v<detail::remove_cv_t<U>, detail::remove_cv_t<T>> && detail::is_convertible_v<U*, T*>)
         : Span(values.data, values.size) {}
 
     template<typename Container>
     constexpr Span(Container&& values) noexcept
-        requires(
-            detail::is_same_v<detail::remove_cv_t<detail::remove_pointer_t<decltype(values.data())>>, detail::remove_cv_t<T>> &&
-            detail::is_convertible_v<decltype(values.data()), T*> &&
-            detail::is_convertible_v<decltype(values.size()), size_t>)
+        requires(detail::is_same_v<detail::remove_cv_t<detail::remove_pointer_t<decltype(values.data())>>, detail::remove_cv_t<T>> &&
+                 detail::is_convertible_v<decltype(values.data()), T*> && detail::is_convertible_v<decltype(values.size()), size_t>)
         : Span(values.data(), values.size()) {}
 
     // Temporary container and initializer-list storage is valid only through
     // the containing full expression. Functions must not retain the span.
-    constexpr Span(std::initializer_list<detail::remove_const_t<T>> values) noexcept
-        requires detail::is_const_v<T>
+    constexpr Span(std::initializer_list<detail::remove_const_t<T>> values) noexcept requires detail::is_const_v<T>
         : Span(values.begin(), values.size()) {}
 };
 

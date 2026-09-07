@@ -439,7 +439,7 @@ struct DeviceDesc
 {
     void* window = nullptr;
     Format swapchain_format = Format::undefined;
-    uint32 desired_swapchain_image_count = 2;
+    uint32 desired_swapchain_image_count = 2; // 1..8 presentation contexts.
 };
 
 struct DeviceInit
@@ -632,6 +632,7 @@ struct RenderingDesc
     StencilAttachment stencil = {};
 };
 
+// Rendering and raster PSOs accept at most eight color attachments. A render pass needs at least one attachment to infer its area.
 // All resource destruction is immediate. Destroy resources only when no recorded or executing GPU frame uses them.
 // The optional NoGraphicsAPIUtility DeleteQueue can defer destruction until a submitted frame completes.
 // Wait for all submitted frames to drain before destroying the device.
@@ -676,10 +677,7 @@ void destroy_texture_heap(const TextureHeap& heap) noexcept;
 void destroy_texture(Texture* texture) noexcept;
 [[nodiscard]] RenderView* create_render_view(Texture* texture, const RenderViewDesc& desc = {}) noexcept;
 void destroy_render_view(RenderView* render_view) noexcept;
-void write_texture_descriptor(Device* device,
-                              void* cpu_destination,
-                              const Texture* texture,
-                              TextureDescriptorType type,
+void write_texture_descriptor(Device* device, void* cpu_destination, const Texture* texture, TextureDescriptorType type,
                               const TextureDescriptorDesc& desc = {}) noexcept;
 void write_sampler_descriptor(Device* device, void* cpu_destination, const SamplerDesc& desc = {}) noexcept;
 
@@ -688,7 +686,8 @@ void write_sampler_descriptor(Device* device, void* cpu_destination, const Sampl
 [[nodiscard]] PSO* create_compute_pso(Device* device, Span<const uint32> compute_spirv) noexcept;
 void destroy_pso(PSO* pso) noexcept;
 
-// Every begun command buffer must be included exactly once in the next submit or submit_and_present call
+// Create textures before beginning commands. The first begun command buffer initializes them and must be submitted first.
+// Every begun command buffer must be included exactly once in the next submit or submit_and_present call.
 [[nodiscard]] CommandBuffer* begin_commands(Device* device) noexcept;
 void submit(Span<CommandBuffer* const> commands, TimelinePoint completion) noexcept;
 
@@ -711,13 +710,12 @@ void set_depth_stencil(CommandBuffer* commands, const DepthStencilState& state) 
 
 void bind_pso(CommandBuffer* commands, const PSO* pso) noexcept;
 
-void draw(CommandBuffer* commands, ByteSpan root, uint32 vertex_count, uint32 instance_count = 1,
-          uint32 first_vertex = 0, uint32 first_instance = 0) noexcept;
-void draw_indexed(CommandBuffer* commands, ByteSpan root, GpuRange indices, IndexType type, uint32 index_count,
-                  uint32 instance_count = 1, uint32 first_index = 0, int32 vertex_offset = 0, uint32 first_instance = 0) noexcept;
+void draw(CommandBuffer* commands, ByteSpan root, uint32 vertex_count, uint32 instance_count = 1, uint32 first_vertex = 0, uint32 first_instance = 0) noexcept;
+void draw_indexed(CommandBuffer* commands, ByteSpan root, GpuRange indices, IndexType type, uint32 index_count, uint32 instance_count = 1,
+                  uint32 first_index = 0, int32 vertex_offset = 0, uint32 first_instance = 0) noexcept;
 void draw_indirect(CommandBuffer* commands, ByteSpan root, GpuRange arguments, uint32 draw_count = 1, uint32 stride = 0) noexcept;
-void draw_indexed_indirect(CommandBuffer* commands, ByteSpan root, GpuRange indices, IndexType type,
-                           GpuRange arguments, uint32 draw_count = 1, uint32 stride = 0) noexcept;
+void draw_indexed_indirect(CommandBuffer* commands, ByteSpan root, GpuRange indices, IndexType type, GpuRange arguments, uint32 draw_count = 1,
+                           uint32 stride = 0) noexcept;
 void dispatch(CommandBuffer* commands, ByteSpan root, uint32x3 group_count) noexcept;
 void dispatch_indirect(CommandBuffer* commands, ByteSpan root, GpuRange arguments) noexcept;
 void draw_meshlets(CommandBuffer* commands, ByteSpan root, uint32x3 group_count) noexcept;

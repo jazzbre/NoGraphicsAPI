@@ -9,7 +9,6 @@
 #include <NoGraphicsAPIUtility/math.hpp>
 #include <NoGraphicsAPIUtility/texture_allocator.hpp>
 
-#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -76,14 +75,9 @@ namespace {
 int main() {
 	// Init
 	void* window = open_example_window("NoGraphicsAPI spinning textured cube", width, height);
-    const DeviceInit device_init = create_device({
-        .window = window,
-        .swapchain_format = Format::bgra8_srgb,
-    });
+    Device* device = create_device({.window = window, .swapchain_format = Format::bgra8_srgb}).device;
 
-    Device* device = device_init.device;
-
-    if (device_init.error != Error::none)
+    if (!window || !device)
     {
         destroy_device(device);
         close_example_window(window);
@@ -152,6 +146,7 @@ int main() {
 	RenderView* depth_render_view = nullptr;
 	uint32x2 depth_extent{};
 	uint64 frame_index = 0;
+    const float4x4 view = math::look_at_rh({.x = 0.0f, .y = 3.0f, .z = 5.0f}, {.x = 0.0f, .y = 0.0f, .z = 0.0f}, {.x = 0.0f, .y = 1.0f, .z = 0.0f});
 
 	while (pump_example_window(window))
 	{
@@ -203,13 +198,9 @@ int main() {
         float4x4 projection = math::perspective_rh_zo(45.0f * math::pi / 180.0f,
                                                      float(frame.extent.x) / float(frame.extent.y), 0.1f, 100.0f);
         projection.rows[1].y = -projection.rows[1].y;
-		const float4x4 view = math::look_at_rh({.x = 0.0f, .y = 3.0f, .z = 5.0f}, {.x = 0.0f, .y = 0.0f, .z = 0.0f}, {.x = 0.0f, .y = 1.0f, .z = 0.0f});
-        const float4x4 model = math::rotation_y(radians_per_frame * float(frame_index++));
-        const float4x4 mvp = projection * view * model;
-
 		const CubeRootArguments root {
             .vertices = vertex_allocation.gpu,
-            .transform = mvp,
+            .transform = projection * view * math::rotation_y(radians_per_frame * float(frame_index++)),
         };
 
 		draw_indexed(commands, root, gpu_range(index_allocation), IndexType::uint16, cube_index_count);
@@ -221,7 +212,7 @@ int main() {
 		submit_and_present(device, {commands}, latest_completion);
 	}
 
-	wait_timeline(latest_completion);
+    wait_idle(device);
 
 	// Cleanup
 	destroy_timeline_semaphore(latest_completion.semaphore);

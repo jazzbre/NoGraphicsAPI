@@ -9,29 +9,21 @@ set(deferred_vertex_shader ${shader_dir}/deferred.vert.${NOGRAPHICSAPI_SHADER_SU
 set(deferred_fragment_shader ${shader_dir}/deferred.frag.${NOGRAPHICSAPI_SHADER_SUFFIX})
 set(gbuffer_shader_dependencies
     ${CMAKE_CURRENT_SOURCE_DIR}/gbuffer_shared.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/object_data.h
-    ${PROJECT_SOURCE_DIR}/utility/include/NoGraphicsAPIUtility/shader_types.h
-    ${PROJECT_SOURCE_DIR}/utility/include/NoGraphicsAPIUtility/shader_platform.h)
+    ${CMAKE_CURRENT_SOURCE_DIR}/object_data.h)
 set(simulation_shader_dependencies
     ${CMAKE_CURRENT_SOURCE_DIR}/simulation_shared.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/object_data.h
-    ${PROJECT_SOURCE_DIR}/utility/include/NoGraphicsAPIUtility/shader_types.h
-    ${PROJECT_SOURCE_DIR}/utility/include/NoGraphicsAPIUtility/shader_platform.h)
-set(deferred_lighting_shader_dependencies
-    ${CMAKE_CURRENT_SOURCE_DIR}/deferred_lighting_shared.h
-    ${PROJECT_SOURCE_DIR}/utility/include/NoGraphicsAPIUtility/shader_types.h
-    ${PROJECT_SOURCE_DIR}/utility/include/NoGraphicsAPIUtility/shader_platform.h)
+    ${CMAKE_CURRENT_SOURCE_DIR}/object_data.h)
 
 NoGraphicsAPI_compile_slang(${simulation_compute_shader} ${simulation_shader} computeMain compute
-    DESCRIPTOR_HEAP DEPENDS ${simulation_shader_dependencies})
+    DEPENDS ${simulation_shader_dependencies})
 NoGraphicsAPI_compile_slang(${gbuffer_mesh_shader} ${gbuffer_shader} meshMain mesh
-    DESCRIPTOR_HEAP DEPENDS ${gbuffer_shader_dependencies})
+    DEPENDS ${gbuffer_shader_dependencies})
 NoGraphicsAPI_compile_slang(${gbuffer_fragment_shader} ${gbuffer_shader} fragmentMain fragment
-    DESCRIPTOR_HEAP DEPENDS ${gbuffer_shader_dependencies})
+    DEPENDS ${gbuffer_shader_dependencies})
 NoGraphicsAPI_compile_slang(${deferred_vertex_shader} ${deferred_lighting_shader} vertexMain vertex
-    DESCRIPTOR_HEAP DEPENDS ${deferred_lighting_shader_dependencies})
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/deferred_lighting_shared.h)
 NoGraphicsAPI_compile_slang(${deferred_fragment_shader} ${deferred_lighting_shader} fragmentMain fragment
-    DESCRIPTOR_HEAP DEPENDS ${deferred_lighting_shader_dependencies})
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/deferred_lighting_shared.h)
 
 NoGraphicsAPI_add_example(example_deferred_renderer
     deferred_renderer.cpp

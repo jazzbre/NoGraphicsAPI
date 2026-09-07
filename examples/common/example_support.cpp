@@ -31,8 +31,7 @@ Span<uint32> read_shader_binary(const char* path) noexcept
         return {};
     }
     const long byte_count = ftell(file);
-    if (byte_count < static_cast<long>(5 * sizeof(uint32)) ||
-        byte_count % static_cast<long>(sizeof(uint32)) != 0)
+    if (byte_count < static_cast<long>(5 * sizeof(uint32)) || byte_count % static_cast<long>(sizeof(uint32)) != 0)
     {
         fprintf(stderr, "Invalid shader file size: %s\n", path);
         fclose(file);
@@ -53,8 +52,7 @@ Span<uint32> read_shader_binary(const char* path) noexcept
     return code;
 }
 
-bool read_binary_file(const char* path,
-                      Span<byte> data) noexcept
+bool read_binary_file(const char* path, Span<byte> data) noexcept
 {
     assert(path && data.data && data.size);
     FILE* file = fopen(path, "rb");
@@ -63,13 +61,9 @@ bool read_binary_file(const char* path,
         fprintf(stderr, "Failed to open resource file: %s\n", path);
         return false;
     }
-    const bool size_succeeded =
-        fseek(file, 0, SEEK_END) == 0 &&
-        ftell(file) == static_cast<long>(data.size);
+    const bool size_succeeded = fseek(file, 0, SEEK_END) == 0 && ftell(file) == static_cast<long>(data.size);
     rewind(file);
-    const bool read_succeeded =
-        size_succeeded &&
-        fread(data.data, 1, data.size, file) == data.size;
+    const bool read_succeeded = size_succeeded && fread(data.data, 1, data.size, file) == data.size;
     fclose(file);
     if (!read_succeeded)
         fprintf(stderr, "Invalid resource file: %s\n", path);
@@ -96,10 +90,7 @@ namespace
 constexpr const char* window_class_name = "NoGraphicsAPI_example_window";
 constexpr DWORD window_style = WS_OVERLAPPEDWINDOW;
 
-LRESULT CALLBACK example_window_proc(HWND hwnd,
-                                     UINT message,
-                                     WPARAM wparam,
-                                     LPARAM lparam) noexcept
+LRESULT CALLBACK example_window_proc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) noexcept
 {
     switch (message)
     {
@@ -127,9 +118,7 @@ LRESULT CALLBACK example_window_proc(HWND hwnd,
 
 } // namespace
 
-void* open_example_window(const char* title,
-                          uint32 width,
-                          uint32 height) noexcept
+void* open_example_window(const char* title, uint32 width, uint32 height) noexcept
 {
     assert(title && width && height);
     const HINSTANCE instance = GetModuleHandleA(nullptr);
@@ -179,9 +168,7 @@ bool pump_example_window(void* window) noexcept
         while (PeekMessageA(&message, nullptr, 0, 0, PM_REMOVE))
         {
             if (message.message == WM_QUIT)
-            {
                 return false;
-            }
             TranslateMessage(&message);
             DispatchMessageA(&message);
         }

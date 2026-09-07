@@ -497,25 +497,15 @@ using SetViewportFunction = void (*)(gpu::CommandBuffer*, const gpu::Viewport&) 
 using SetScissorFunction = void (*)(gpu::CommandBuffer*, const gpu::Scissor&) noexcept;
 using SetDepthStencilFunction = void (*)(gpu::CommandBuffer*, const gpu::DepthStencilState&) noexcept;
 using CopyMemoryFunction = void (*)(gpu::CommandBuffer*, gpu::GpuRange, gpu::GpuRange) noexcept;
-using CopyMemoryToTextureFunction = void (*)(gpu::CommandBuffer*, gpu::GpuRange, gpu::Texture*,
-                                             const gpu::TextureCopyDesc&) noexcept;
-using CopyTextureToMemoryFunction = void (*)(gpu::CommandBuffer*, gpu::Texture*, gpu::GpuRange,
-                                             const gpu::TextureCopyDesc&) noexcept;
-using WriteTextureDescriptorFunction = void (*)(gpu::Device*, void*, const gpu::Texture*,
-                                                gpu::TextureDescriptorType,
-                                                const gpu::TextureDescriptorDesc&) noexcept;
-using WriteSamplerDescriptorFunction = void (*)(gpu::Device*, void*,
-                                                const gpu::SamplerDesc&) noexcept;
-using DrawFunction = void (*)(gpu::CommandBuffer*, gpu::ByteSpan, uint32, uint32, uint32,
-                              uint32) noexcept;
-using DrawIndexedFunction = void (*)(gpu::CommandBuffer*, gpu::ByteSpan, gpu::GpuRange, gpu::IndexType,
-                                     uint32, uint32, uint32, int32,
-                                     uint32) noexcept;
-using DrawIndirectFunction = void (*)(gpu::CommandBuffer*, gpu::ByteSpan, gpu::GpuRange, uint32,
-                                      uint32) noexcept;
-using DrawIndexedIndirectFunction = void (*)(gpu::CommandBuffer*, gpu::ByteSpan, gpu::GpuRange,
-                                             gpu::IndexType, gpu::GpuRange, uint32,
-                                             uint32) noexcept;
+using CopyMemoryToTextureFunction = void (*)(gpu::CommandBuffer*, gpu::GpuRange, gpu::Texture*, const gpu::TextureCopyDesc&) noexcept;
+using CopyTextureToMemoryFunction = void (*)(gpu::CommandBuffer*, gpu::Texture*, gpu::GpuRange, const gpu::TextureCopyDesc&) noexcept;
+using WriteTextureDescriptorFunction = void (*)(gpu::Device*, void*, const gpu::Texture*, gpu::TextureDescriptorType,
+                                               const gpu::TextureDescriptorDesc&) noexcept;
+using WriteSamplerDescriptorFunction = void (*)(gpu::Device*, void*, const gpu::SamplerDesc&) noexcept;
+using DrawFunction = void (*)(gpu::CommandBuffer*, gpu::ByteSpan, uint32, uint32, uint32, uint32) noexcept;
+using DrawIndexedFunction = void (*)(gpu::CommandBuffer*, gpu::ByteSpan, gpu::GpuRange, gpu::IndexType, uint32, uint32, uint32, int32, uint32) noexcept;
+using DrawIndirectFunction = void (*)(gpu::CommandBuffer*, gpu::ByteSpan, gpu::GpuRange, uint32, uint32) noexcept;
+using DrawIndexedIndirectFunction = void (*)(gpu::CommandBuffer*, gpu::ByteSpan, gpu::GpuRange, gpu::IndexType, gpu::GpuRange, uint32, uint32) noexcept;
 using DispatchFunction = void (*)(gpu::CommandBuffer*, gpu::ByteSpan, gpu::uint32x3) noexcept;
 using DispatchIndirectFunction = void (*)(gpu::CommandBuffer*, gpu::ByteSpan, gpu::GpuRange) noexcept;
 static_assert(gpu::detail::is_same_v<decltype(&gpu::create_gpu_heap), CreateGpuHeapFunction>);
@@ -550,10 +540,8 @@ static_assert(gpu::detail::is_same_v<decltype(&gpu::draw_meshlets), DispatchFunc
 static_assert(gpu::detail::is_same_v<decltype(&gpu::draw_meshlets_indirect), DrawIndirectFunction>);
 static_assert(__is_constructible(CommandBatch, std::initializer_list<gpu::CommandBuffer*>));
 
-[[maybe_unused]] void compile_api_surface(gpu::Device* device, gpu::Texture* texture,
-                                          gpu::RenderView* render_view, gpu::PSO* pso,
-                                          gpu::CommandBuffer* commands, gpu::TimelineSemaphore* semaphore,
-                                          const ApiRoot& root, void* descriptor)
+[[maybe_unused]] void compile_api_surface(gpu::Device* device, gpu::Texture* texture, gpu::RenderView* render_view, gpu::PSO* pso,
+                                         gpu::CommandBuffer* commands, gpu::TimelineSemaphore* semaphore, const ApiRoot& root, void* descriptor)
 {
     gpu::DeviceInit device_init = gpu::create_device();
     gpu::DeviceInit window_device_init = gpu::create_device({

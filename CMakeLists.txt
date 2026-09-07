@@ -88,6 +88,10 @@ else()
     )
 endif()
 
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(NoGraphicsAPI PRIVATE -Wno-missing-field-initializers)
+endif()
+
 add_subdirectory(utility)
 
 if(NOGRAPHICSAPI_BUILD_EXAMPLES)

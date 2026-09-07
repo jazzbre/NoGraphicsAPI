@@ -2,15 +2,10 @@ set(shader ${CMAKE_CURRENT_SOURCE_DIR}/cube.slang)
 set(shader_dir ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 set(vertex_shader ${shader_dir}/cube.vert.${NOGRAPHICSAPI_SHADER_SUFFIX})
 set(fragment_shader ${shader_dir}/cube.frag.${NOGRAPHICSAPI_SHADER_SUFFIX})
-set(shader_dependencies
-    ${CMAKE_CURRENT_SOURCE_DIR}/cube_shared.h
-    ${PROJECT_SOURCE_DIR}/utility/include/NoGraphicsAPIUtility/shader_types.h
-    ${PROJECT_SOURCE_DIR}/utility/include/NoGraphicsAPIUtility/shader_platform.h)
-
 NoGraphicsAPI_compile_slang(${vertex_shader} ${shader} vertexMain vertex
-    DESCRIPTOR_HEAP DEPENDS ${shader_dependencies})
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/cube_shared.h)
 NoGraphicsAPI_compile_slang(${fragment_shader} ${shader} fragmentMain fragment
-    DESCRIPTOR_HEAP DEPENDS ${shader_dependencies})
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/cube_shared.h)
 
 set(texture_name lunarg_logo_256x256.rgba8)
 set(texture_source ${CMAKE_CURRENT_SOURCE_DIR}/${texture_name})

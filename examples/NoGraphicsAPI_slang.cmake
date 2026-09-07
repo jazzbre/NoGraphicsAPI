@@ -41,7 +41,7 @@ if(NOGRAPHICSAPI_BACKEND STREQUAL "vulkan")
 endif()
 
 function(NoGraphicsAPI_compile_slang output source entry stage)
-    cmake_parse_arguments(SLANG "DESCRIPTOR_HEAP" "DEFINE" "DEPENDS" ${ARGN})
+    cmake_parse_arguments(SLANG "" "" "DEPENDS" ${ARGN})
     set(options)
     set(validate)
     if(NOGRAPHICSAPI_BACKEND STREQUAL "vulkan")
@@ -51,11 +51,10 @@ function(NoGraphicsAPI_compile_slang output source entry stage)
             -profile spirv_1_5
             -emit-spirv-directly
             -fvk-use-entrypoint-name
+            -fvk-use-c-layout
+            -capability spvDescriptorHeapEXT
             -DNGA_VULKAN=1)
         set(validate COMMAND ${NOGRAPHICSAPI_SPIRV_VAL} --target-env vulkan1.4 --scalar-block-layout ${output})
-        if(SLANG_DESCRIPTOR_HEAP)
-            list(APPEND options -fvk-use-c-layout -capability spvDescriptorHeapEXT)
-        endif()
         if(stage STREQUAL "mesh")
             list(APPEND options -capability spvMeshShadingEXT)
         endif()
@@ -67,16 +66,11 @@ function(NoGraphicsAPI_compile_slang output source entry stage)
             -DNGA_D3D12=1)
     endif()
 
-    if(SLANG_DESCRIPTOR_HEAP)
-        list(APPEND options
-            -matrix-layout-row-major
-            -I ${CMAKE_CURRENT_SOURCE_DIR}
-            -I ${PROJECT_SOURCE_DIR}/include
-            -I ${PROJECT_SOURCE_DIR}/utility/include)
-    endif()
-    if(SLANG_DEFINE)
-        list(APPEND options -D${SLANG_DEFINE}=1)
-    endif()
+    list(APPEND options
+        -matrix-layout-row-major
+        -I ${CMAKE_CURRENT_SOURCE_DIR}
+        -I ${PROJECT_SOURCE_DIR}/include
+        -I ${PROJECT_SOURCE_DIR}/utility/include)
 
     get_filename_component(output_dir "${output}" DIRECTORY)
     add_custom_command(
@@ -91,6 +85,9 @@ function(NoGraphicsAPI_compile_slang output source entry stage)
             -o ${output}
         ${validate}
         DEPENDS ${source} ${SLANG_DEPENDS}
+            ${PROJECT_SOURCE_DIR}/include/NoGraphicsAPI/types.h
+            ${PROJECT_SOURCE_DIR}/utility/include/NoGraphicsAPIUtility/shader_types.h
+            ${PROJECT_SOURCE_DIR}/utility/include/NoGraphicsAPIUtility/shader_platform.h
         VERBATIM
         COMMENT "Compiling Slang ${stage} shader ${entry}"
     )

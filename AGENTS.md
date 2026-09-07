@@ -1,6 +1,8 @@
 # Coding Guidelines
 
 - Write simple, efficient, minimal C/C++ code.
+- Do not add obvious comments such as "arguments must be live objects". C/C++ programmers already understand that using destroyed objects is invalid.
+- Do not add asserts or comments describing 32-bit overflow cases. The existing 32-bit ranges (about 4 billion elements or 4 GB) are sufficient.
 - Do not use C++ standard-library headers or facilities in project code, including utilities, examples, and tests.
   The sole exception is `<initializer_list>` and `std::initializer_list` for `Span` construction. C library headers (`*.h`) and functions are allowed.
 - Use our own `int8`, `uint8`, `int16`, `uint16`, `int32`, `uint32`, `int64`, and `uint64` types, defined with plain `typedef`s in one shared header.

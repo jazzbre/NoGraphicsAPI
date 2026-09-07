@@ -8,7 +8,6 @@
 #include <NoGraphicsAPIUtility/math.hpp>
 #include <NoGraphicsAPIUtility/texture_allocator.hpp>
 
-#include <assert.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -58,31 +57,23 @@ void destroy_gbuffer(TextureAllocator& texture_allocator, GBuffer& gbuffer) noex
     gbuffer = {};
 }
 
-void recreate_gbuffer(Device* device,
-                      TextureAllocator& texture_allocator,
-                      GBuffer& gbuffer,
-                      byte* descriptors,
-                      uint64 descriptor_size,
-                      uint32 width,
-                      uint32 height) noexcept
+void recreate_gbuffer(Device* device, TextureAllocator& texture_allocator, GBuffer& gbuffer, byte* descriptors, uint64 descriptor_size,
+                     uint32 width, uint32 height) noexcept
 {
     gbuffer = {
         .albedo = texture_allocator.allocate({
             .extent = {.x = width, .y = height, .z = 1},
-            .usage = TextureUsage::sampled |
-                        TextureUsage::color_attachment,
+            .usage = TextureUsage::sampled | TextureUsage::color_attachment,
         }),
         .normal_roughness = texture_allocator.allocate({
             .extent = {.x = width, .y = height, .z = 1},
             .format = Format::rgba16_float,
-            .usage = TextureUsage::sampled |
-                        TextureUsage::color_attachment,
+            .usage = TextureUsage::sampled | TextureUsage::color_attachment,
         }),
         .depth = texture_allocator.allocate({
             .extent = {.x = width, .y = height, .z = 1},
             .format = Format::d32_float,
-            .usage = TextureUsage::sampled |
-                        TextureUsage::depth_stencil_attachment,
+            .usage = TextureUsage::sampled | TextureUsage::depth_stencil_attachment,
         }),
         .width = width,
         .height = height,
@@ -160,11 +151,9 @@ int main()
 {
     // Init
     void* window = open_example_window("NoGraphicsAPI deferred renderer", initial_width, initial_height);
-    const DeviceInit device_init = create_device({.window = window, .swapchain_format = Format::bgra8_srgb});
+    Device* device = create_device({.window = window, .swapchain_format = Format::bgra8_srgb}).device;
 
-    Device* device = device_init.device;
-
-    if (device_init.error != Error::none)
+    if (!window || !device)
     {
         destroy_device(device);
         close_example_window(window);
@@ -259,9 +248,7 @@ int main()
         {
             if (gbuffer.albedo.texture)
             {
-                delete_queue.defer(latest_completion.value, [&texture_allocator, gbuffer]() mutable noexcept {
-                    destroy_gbuffer(texture_allocator, gbuffer);
-                });
+                delete_queue.defer(latest_completion.value, [&texture_allocator, gbuffer]() mutable noexcept { destroy_gbuffer(texture_allocator, gbuffer); });
                 descriptor_row = (descriptor_row + 1) % frames_in_flight;
             }
             recreate_gbuffer(device, texture_allocator, gbuffer,
@@ -312,12 +299,11 @@ int main()
 
         float4x4 projection = math::perspective_rh_zo(math::pi / 3.0f, float(extent.x) / float(extent.y), 0.3f, 1500.0f);
         projection.rows[1].y = -projection.rows[1].y;
-        float4x4 view_projection = projection * view;
         rotation_angle += cube_rotation_speed * delta_seconds;
 
         const GBufferRoot gbuffer_root{
             .objects = object_allocation.gpu,
-            .view_projection = view_projection,
+            .view_projection = projection * view,
             .orientation = math::to_float3x4(
                 math::rotation_y(rotation_angle) *
                 math::rotation_x(rotation_angle * 0.5f) *
