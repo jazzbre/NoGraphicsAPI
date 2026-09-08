@@ -51,6 +51,13 @@ Vulkan 1.4 supplies buffer device addresses, timeline semaphores, dynamic render
 synchronization2, scalar block layout, and the remaining core features. See
 [Vulkan support](docs/vulkan-support.md) for the concise feature and command mapping.
 
+## D3D12 backend
+
+On Windows, select `-DNOGRAPHICSAPI_BACKEND=d3d12`. The backend requires Shader Model 6.6,
+resource binding tier 3, enhanced barriers, and independent front/back stencil references.
+`Format::s8_uint` is unsupported; query `supports_texture_format()` before choosing it.
+Shared shaders use `GPU_PTR(T)` and `NGA_ROOT` with `NGA_D3D12` defined, preserving the C++ root layout.
+
 ## GPU memory and descriptor heaps
 
 There are no public buffer objects or internal suballocators. Applications own data and descriptor

@@ -37,3 +37,28 @@ target_link_libraries(test_placed_texture PRIVATE NoGraphicsAPIUtility::textures
 add_test(NAME test_placed_texture COMMAND test_placed_texture)
 set_tests_properties(test_command_context test_placed_texture PROPERTIES
     SKIP_RETURN_CODE 77 TIMEOUT 60 FAIL_REGULAR_EXPRESSION "Validation Error")
+
+if(NOGRAPHICSAPI_BACKEND STREQUAL "d3d12")
+    include(${PROJECT_SOURCE_DIR}/examples/NoGraphicsAPI_slang.cmake)
+    set(dx12_test_shaders)
+    foreach(stage IN ITEMS compute vertex fragment mesh)
+        if(stage STREQUAL "compute")
+            set(source ${CMAKE_CURRENT_SOURCE_DIR}/dx12_compute_test.slang)
+        else()
+            set(source ${CMAKE_CURRENT_SOURCE_DIR}/dx12_raster_test.slang)
+        endif()
+        set(output ${CMAKE_CURRENT_BINARY_DIR}/dx12_test.${stage}.dxil)
+        NoGraphicsAPI_compile_slang(${output} ${source} ${stage}Main ${stage}
+            DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/dx12_test_shared.h)
+        list(APPEND dx12_test_shaders ${output})
+    endforeach()
+    add_executable(test_dx12_backend dx12_backend_test.cpp ${dx12_test_shaders})
+    target_compile_features(test_dx12_backend PRIVATE cxx_std_20)
+    NoGraphicsAPI_disable_exceptions(test_dx12_backend)
+    target_include_directories(test_dx12_backend PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/utility/include)
+    target_link_libraries(test_dx12_backend PRIVATE d3d12 dxgi user32)
+    target_compile_definitions(test_dx12_backend PRIVATE DX12_TEST_SHADER_DIRECTORY="${CMAKE_CURRENT_BINARY_DIR}")
+    add_test(NAME test_dx12_backend COMMAND test_dx12_backend)
+    set_tests_properties(test_dx12_backend PROPERTIES
+        SKIP_RETURN_CODE 77 TIMEOUT 60 FAIL_REGULAR_EXPRESSION "NoGraphicsAPI validation:")
+endif()
