@@ -1,5 +1,8 @@
 #pragma once
 
+// Shared declarations need the backend portability layer as well as these types.
+#include <NoGraphicsAPIUtility/shader_platform.h>
+
 #if defined(__SLANG__)
 
 // Slang already provides float[2-4], int[2-4], uint[2-4], bool[2-4],

@@ -1,6 +1,5 @@
 #pragma once
 
-#include <NoGraphicsAPIUtility/shader_platform.h>
 #include <NoGraphicsAPIUtility/shader_types.h>
 
 struct ObjectData
