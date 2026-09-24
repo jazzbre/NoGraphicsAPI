@@ -1,6 +1,8 @@
 # Coding Guidelines
 
 - Write simple, efficient, minimal C/C++ code.
+- Target one fixed feature set on the latest GPUs and drivers. Avoid optional feature flags, feature queries, and fallback paths.
+  Require features universally supported across the target hardware; otherwise ask the user before adding them.
 - Do not add obvious comments such as "arguments must be live objects". C/C++ programmers already understand that using destroyed objects is invalid.
 - Do not add asserts or comments describing 32-bit overflow cases. The existing 32-bit ranges (about 4 billion elements or 4 GB) are sufficient.
 - Do not use C++ standard-library headers or facilities in project code, including utilities, examples, and tests.
@@ -19,6 +21,7 @@
   uses them. Wait for the submission timeline value covering the final use, or use the optional NoGraphicsAPIUtility `DeleteQueue` to defer destruction.
 - At shutdown, call `wait_idle`, drain every NoGraphicsAPIUtility `DeleteQueue`, and then destroy resources and the device.
 - Wait for every submitted frame to drain before calling `destroy_device`.
+- Group APIs logically in public headers; for example, keep all command buffer APIs together.
 - Keep each public resource creation function next to its matching destruction function. Keep the shared lifetime policy in one place rather than repeating it
   for individual resource types.
 - Do not abort for programming errors. Enforce their documented preconditions with asserts and leave release builds free of those checks.
@@ -34,7 +37,8 @@
 - Do not use PIMPL interfaces.
 - Avoid standard-library algorithms; prefer straightforward loops.
 - Do not use hash maps or ordered maps.
-- Do not use mutexes or atomics in the graphics API. The API is intentionally single-threaded and is not thread-safe yet. The utility
+- Do not use mutexes or atomics in the graphics API. Queues and command pools are externally synchronized; independent pools, queues,
+  resource creation, and timeline waits can run concurrently. D3D12 may use a narrow internal lock for shared descriptor and GPU-pointer tables. The utility
   `BumpAllocator::allocate_atomic()` is the sole exception: it supports relaxed-atomic reservation of disjoint mapped ranges while allocation
   lifetime and GPU submission remain caller-synchronized.
 - Avoid copying large user data structures. Prefer references to structures, and use spans for array data in structures and function parameters.
@@ -46,6 +50,7 @@
   behind preprocessor conditionals.
 - Keep each shader source file's CPU-shared declarations in its own matching shared header. Keep shader-specific root data and constants in that header;
   put types used by multiple shader files in a neutral common header.
+- Use shared (CPU/GPU) data headers for structs, enums, and constants. Do not put arbitrary C/C++ code in them behind `#if !defined(__SLANG__)` blocks.
 - Always review code for performance issues before considering work complete.
 - Line length is 160 characters. Please don't chop expressions to multiple lines if not needed.
 

@@ -34,7 +34,7 @@ The backend requires Vulkan 1.4 and four device extensions:
   and push data;
 - `VK_KHR_device_address_commands` for address-based index binding, indirect commands, and copies;
 - `VK_KHR_shader_untyped_pointers` for the descriptor-heap shader model; and
-- `VK_EXT_mesh_shader` for mesh pipelines and draws.
+- `VK_EXT_mesh_shader` for task/mesh pipelines and draws.
 
 `VK_KHR_unified_image_layouts` is enabled when available to optimize the backend's single-layout
 texture model. The public API does not expose layouts either way.
@@ -118,15 +118,15 @@ requirements.
 The exact root contract is:
 
 - one root block is shared by all active graphics stages;
-- the byte size is a multiple of four and does not exceed `DeviceCaps::max_push_data_size`;
+- the byte size is a multiple of four and does not exceed 256 bytes or `DeviceCaps::max_push_data_size`;
 - typed roots are trivially copyable;
 - shared structures use C layout, with row-major layout enabled for matrices; and
 - `{}` represents a rootless command and emits no push-data operation.
 
 This is a deliberate performance-oriented adaptation. Pushing the entire small root lets the shader
 read fields immediately; pushing only its GPU address would add another dependent memory load.
-However, it cannot represent separate vertex and fragment roots, roots larger than the device's
-push-data limit, or roots generated and selected by the GPU. A future fully GPU-driven path would
+However, it cannot represent separate vertex and fragment roots, roots larger than 256 bytes or the
+device's push-data limit, or roots generated and selected by the GPU. A future fully GPU-driven path would
 need explicit GPU-root commands rather than changing this ABI implicitly.
 
 ## Pipelines and rendering
@@ -170,13 +170,14 @@ mechanism nor configurable token operations, so the current API exposes only uns
 
 ## Commands, timelines, and indirect work
 
-Command buffers are one-shot handles backed by reusable Vulkan contexts. Each submission consumes all
-command buffers begun since the preceding submission, in the supplied order.
+Command buffers are one-shot handles backed by explicit reusable command pools. Applications end
+buffers before submitting any subset to a selected queue. Pools support independent recording on
+worker threads, and are reset after their submitted work completes.
 
 Applications provide a monotonically increasing `TimelinePoint` with every submission. Polling or
 waiting that point controls reuse of application-owned heap ranges, texture placements, descriptor
-slots, and readback data. Internal command-context reuse uses a separate private timeline. This keeps
-frames asynchronous and matches the post's recommendation that completion be explicit.
+slots, readback data, and command pools. Submission can wait on other timeline points for cross-queue
+dependencies. Queues share one graphics + compute family and remain externally synchronized.
 
 `VK_KHR_device_address_commands` extends the GPU-pointer model into command processing. Index data,
 indirect argument records, and copy operands are supplied as `GpuRange` values and passed to Vulkan
@@ -211,7 +212,7 @@ The implementation deliberately uses CPU push-data roots, one shared graphics ro
 sampler descriptor heap, one GPU-only texture memory type, and Vulkan stage/access masks. These
 preserve the post's main model while adapting it to `VK_EXT_descriptor_heap` and synchronization2.
 
-**Prototype scope.** Vulkan already supports task shaders, public queue selection and multiple queues,
+**Prototype scope.** Vulkan already supports dedicated compute/transfer queue families,
 GPU-addressed indirect draw counts through `vkCmdDraw*IndirectCount2KHR`, and optional BDA
 capture/replay address preservation. This backend does not expose them. Remaining rasterization,
 blend, and attachment state in PSOs is also largely a current implementation choice.

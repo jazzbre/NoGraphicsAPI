@@ -26,7 +26,7 @@ NoGraphicsAPI_add_example(example_cube
     ${vertex_shader}
     ${fragment_shader}
 )
-target_link_libraries(example_cube PRIVATE NoGraphicsAPIUtility::math NoGraphicsAPIUtility::textures)
+target_link_libraries(example_cube PRIVATE NoGraphicsAPIUtility::math NoGraphicsAPIUtility::textures NoGraphicsAPIUtility::uploads)
 target_compile_definitions(example_cube PRIVATE
     NOGRAPHICSAPI_CUBE_VERTEX_SHADER_PATH="${vertex_shader}"
     NOGRAPHICSAPI_CUBE_FRAGMENT_SHADER_PATH="${fragment_shader}"

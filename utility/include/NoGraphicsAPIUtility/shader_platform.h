@@ -20,7 +20,10 @@
     }                                                                                                                                                          \
     property type name                                                                                                                                         \
     {                                                                                                                                                          \
-        get { return reinterpret<type>(nga_root_words); }                                                                                                      \
+        get                                                                                                                                                    \
+        {                                                                                                                                                      \
+            return reinterpret<type>(nga_root_words);                                                                                                          \
+        }                                                                                                                                                      \
     }
 
 // Encoded NoGraphicsAPI address: [63:40] one-based heap id, [39:0] byte offset.
@@ -33,8 +36,30 @@ struct GpuPtr<T>
 {
     uint64_t address;
 
-    uint descriptor_index() { return nga_internal_descriptor_base + (uint(address >> 40) - 1) * 2; }
-    uint byte_offset() { return uint(address & 0xffffffffffull); }
+    uint descriptor_index()
+    {
+        return nga_internal_descriptor_base + (uint(address >> 40) - 1) * 2;
+    }
+    uint byte_offset()
+    {
+        return uint(address & 0xffffffffffull);
+    }
+
+    uint load_word(uint offset)
+    {
+        ByteAddressBuffer buffer = ResourceDescriptorHeap[NonUniformResourceIndex(descriptor_index())];
+        return buffer.Load<uint>(byte_offset() + offset);
+    }
+    void store_word(uint offset, uint value)
+    {
+        RWByteAddressBuffer buffer = ResourceDescriptorHeap[NonUniformResourceIndex(descriptor_index() + 1)];
+        buffer.Store<uint>(byte_offset() + offset, value);
+    }
+    void add_word(uint offset, uint value)
+    {
+        RWByteAddressBuffer buffer = ResourceDescriptorHeap[NonUniformResourceIndex(descriptor_index() + 1)];
+        buffer.InterlockedAdd(byte_offset() + offset, value);
+    }
 
     __subscript(uint index)->T
     {
@@ -43,8 +68,7 @@ struct GpuPtr<T>
             ByteAddressBuffer buffer = ResourceDescriptorHeap[NonUniformResourceIndex(descriptor_index())];
             return buffer.Load<T>(byte_offset() + index * uint(sizeof(T)));
         }
-        [nonmutating] set
-        {
+        [nonmutating] set {
             RWByteAddressBuffer buffer = ResourceDescriptorHeap[NonUniformResourceIndex(descriptor_index() + 1)];
             buffer.Store<T>(byte_offset() + index * uint(sizeof(T)), newValue);
         }

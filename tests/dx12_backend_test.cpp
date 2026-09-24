@@ -4,6 +4,9 @@
 using namespace gpu;
 
 namespace {
+    CommandPool* test_pool = nullptr;
+    TimelineSemaphore* test_timeline = nullptr;
+    uint64 test_completion_value = 0;
 
     bool expect(bool condition, const char* message)
     {
@@ -38,7 +41,7 @@ namespace {
     {
         const SizeAlign allocation = get_texture_size_align(device, desc);
         const TextureHeap heap = create_texture_heap(device, allocation.size);
-        return { .heap = heap, .texture = create_texture(device, desc, heap, 0) };
+        return { .heap = heap, .texture = create_texture(begin_commands(test_pool), desc, heap, 0) };
     }
 
     void destroy_test_texture(const TestTexture& texture)
@@ -49,8 +52,10 @@ namespace {
 
     void finish_commands(Device* device, CommandBuffer* commands)
     {
-        submit({ commands }, {});
+        end_commands(commands);
+        submit(device, { .commands = { commands }, .completion = { test_timeline, ++test_completion_value } });
         wait_idle(device);
+        reset_command_pool(test_pool);
         drain_debug_messages(device->info_queue);
     }
 
@@ -84,7 +89,7 @@ namespace {
         {
             const GpuHeap textures = create_gpu_heap(device, device->caps.texture_descriptor_size, MemoryType::texture_descriptor_heap);
             const GpuHeap samplers = create_gpu_heap(device, device->caps.sampler_descriptor_size, MemoryType::sampler_descriptor_heap);
-            CommandBuffer* commands = begin_commands(device);
+            CommandBuffer* commands = begin_commands(test_pool);
             set_texture_descriptor_heap(commands, gpu_range(textures));
             set_sampler_descriptor_heap(commands, gpu_range(samplers));
             finish_commands(device, commands);
@@ -130,7 +135,7 @@ namespace {
             .row_pitch_bytes = padded ? row_pitch : 0,
             .slice_pitch_bytes = padded ? slice_pitch : 0,
         };
-        CommandBuffer* commands = begin_commands(device);
+        CommandBuffer* commands = begin_commands(test_pool);
         if (gpu_source)
         {
             copy_memory(commands, gpu_range(upload), gpu_range(staging));
@@ -162,7 +167,7 @@ namespace {
         const GpuHeap output = create_gpu_heap(device, 16, MemoryType::gpu_only);
         const GpuHeap readback = create_gpu_heap(device, 16, MemoryType::readback);
         const Dx12TestRoot root{ .output = reinterpret_cast<uint32*>(output.range.gpu), .descriptor_index = descriptor_index, .operation = operation };
-        CommandBuffer* commands = begin_commands(device);
+        CommandBuffer* commands = begin_commands(test_pool);
         set_texture_descriptor_heap(commands, gpu_range(descriptors));
         bind_pso(commands, compute);
         dispatch(commands, ByteSpan(root), { .x = 1, .y = 1, .z = 1 });
@@ -192,7 +197,7 @@ namespace {
             );
             write_texture_descriptor(device, descriptors.range.cpu, texture.texture, TextureDescriptorType::sampled);
             write_texture_descriptor(device, descriptors.range.cpu + device->caps.texture_descriptor_size, texture.texture, TextureDescriptorType::storage);
-            CommandBuffer* commands = begin_commands(device);
+            CommandBuffer* commands = begin_commands(test_pool);
             copy_memory_to_texture(commands, gpu_range(upload), texture.texture);
             barrier(commands, Stage::transfer, Access::transfer_write, Stage::compute, Access::shader_read);
             finish_commands(device, commands);
@@ -219,7 +224,7 @@ namespace {
             memset(upload.range.cpu + face * 4, face + 1, 4);
         write_texture_descriptor(device, descriptors.range.cpu, texture.texture, TextureDescriptorType::sampled, { .base_layer = 6, .layer_count = 12 });
         write_sampler_descriptor(device, samplers.range.cpu, { .min_filter = Filter::nearest, .mag_filter = Filter::nearest, .mip_filter = Filter::nearest });
-        CommandBuffer* commands = begin_commands(device);
+        CommandBuffer* commands = begin_commands(test_pool);
         copy_memory_to_texture(commands, gpu_range(upload), texture.texture);
         finish_commands(device, commands);
         const bool valid = sample_descriptor(device, compute, descriptors, 0, 7) == 13;
@@ -237,7 +242,7 @@ namespace {
         const GpuHeap arguments = create_gpu_heap(device, 16);
         *reinterpret_cast<D3D12_DISPATCH_ARGUMENTS*>(arguments.range.cpu) = { .ThreadGroupCountX = 4, .ThreadGroupCountY = 1, .ThreadGroupCountZ = 1 };
         const Dx12TestRoot root{ .output = reinterpret_cast<uint32*>(output.range.gpu) };
-        CommandBuffer* commands = begin_commands(device);
+        CommandBuffer* commands = begin_commands(test_pool);
         bind_pso(commands, compute);
         dispatch_indirect(commands, ByteSpan(root), gpu_range(arguments));
         barrier(commands, Stage::compute, Access::shader_write, Stage::transfer, Access::transfer_read);
@@ -277,7 +282,7 @@ namespace {
         *reinterpret_cast<D3D12_DISPATCH_MESH_ARGUMENTS*>(arguments.range.cpu + 112) = { .ThreadGroupCountX = 1,
                                                                                          .ThreadGroupCountY = 1,
                                                                                          .ThreadGroupCountZ = 1 };
-        CommandBuffer* commands = begin_commands(device);
+        CommandBuffer* commands = begin_commands(test_pool);
         for (uint32 mode = 0; mode < (mesh_pipeline ? 5u : 4u); ++mode)
         {
             begin_render_pass(commands, { .colors = { { .render_view = view, .load = LoadOp::clear, .clear = { .w = 1 } } } });
@@ -329,7 +334,7 @@ namespace {
         uint32 references[2]{};
         for (uint32 winding = 0; winding < 2; ++winding)
         {
-            CommandBuffer* commands = begin_commands(device);
+            CommandBuffer* commands = begin_commands(test_pool);
             begin_render_pass(
                 commands,
                 { .depth = { .render_view = view, .load = LoadOp::clear }, .stencil = { .render_view = view, .load = LoadOp::clear, .clear = 7 } }
@@ -362,7 +367,7 @@ namespace {
         RenderView* preserved = create_render_view(color.texture, { .slice = 1 });
         RenderView* discarded = create_render_view(color.texture, { .mip_level = 1 });
         const GpuHeap readback = create_gpu_heap(device, 8 * 8 * 4, MemoryType::readback);
-        CommandBuffer* commands = begin_commands(device);
+        CommandBuffer* commands = begin_commands(test_pool);
         begin_render_pass(commands, { .colors = { { .render_view = preserved, .load = LoadOp::clear, .clear = { .x = 1, .w = 1 } } } });
         end_render_pass(commands);
         begin_render_pass(commands, { .colors = { { .render_view = discarded, .load = LoadOp::discard } } });
@@ -389,6 +394,8 @@ int main()
     if (!initialized.device)
         return 1;
     Device* device = initialized.device;
+    test_pool = create_command_pool(device);
+    test_timeline = create_timeline_semaphore(device);
     const Span<uint32> compute_code = read_test_shader("compute");
     const Span<uint32> vertex_code = read_test_shader("vertex");
     const Span<uint32> fragment_code = read_test_shader("fragment");
@@ -426,6 +433,9 @@ int main()
     free(vertex_code.data);
     free(fragment_code.data);
     free(mesh_code.data);
+    wait_idle(device);
+    destroy_command_pool(test_pool);
+    destroy_timeline_semaphore(test_timeline);
     destroy_device(device);
     return valid ? 0 : 1;
 }

@@ -47,6 +47,8 @@ endif()
 
 if(NOGRAPHICSAPI_BACKEND STREQUAL "vulkan")
     find_package(Vulkan 1.4.357 REQUIRED)
+    message(STATUS "Using Vulkan ${Vulkan_VERSION}: ${Vulkan_LIBRARY}")
+    message(STATUS "Using Vulkan headers: ${Vulkan_INCLUDE_DIR}")
 endif()
 
 add_library(NoGraphicsAPI STATIC

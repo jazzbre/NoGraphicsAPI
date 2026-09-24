@@ -55,7 +55,7 @@ function(NoGraphicsAPI_compile_slang output source entry stage)
             -capability spvDescriptorHeapEXT
             -DNGA_VULKAN=1)
         set(validate COMMAND ${NOGRAPHICSAPI_SPIRV_VAL} --target-env vulkan1.4 --scalar-block-layout ${output})
-        if(stage STREQUAL "mesh")
+        if(stage STREQUAL "mesh" OR stage STREQUAL "amplification")
             list(APPEND options -capability spvMeshShadingEXT)
         endif()
     else()

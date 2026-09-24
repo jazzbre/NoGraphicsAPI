@@ -28,7 +28,7 @@ namespace gpu {
 
         constexpr uint32 format_count = static_cast<uint32>(Format::undefined);
         constexpr uint32 max_color_attachments = 8;
-        constexpr uint32 initial_command_context_count = 2;
+        constexpr uint32 max_queues_per_type = 8;
         constexpr uint32 max_swapchain_images = 8;
         constexpr uint32 gpu_allocation_alignment = 16;
         constexpr uint32 root_constant_count = 64; // 64 DWORDs is the whole D3D12 root signature budget.
@@ -63,7 +63,7 @@ namespace gpu {
 
         void drain_debug_messages(ID3D12InfoQueue* info_queue) noexcept;
 
-        ID3D12InfoQueue* active_info_queue = nullptr; // Debug diagnostics only; the API is single-threaded.
+        thread_local ID3D12InfoQueue* active_info_queue = nullptr;
 
         void require_hr(HRESULT result) noexcept
         {
@@ -160,14 +160,12 @@ namespace gpu {
             case Format::rgba16_uint: return { .resource = DXGI_FORMAT_R16G16B16A16_UINT, .view = DXGI_FORMAT_R16G16B16A16_UINT };
             case Format::r32_uint: return { .resource = DXGI_FORMAT_R32_UINT, .view = DXGI_FORMAT_R32_UINT };
             case Format::rg32_uint: return { .resource = DXGI_FORMAT_R32G32_UINT, .view = DXGI_FORMAT_R32G32_UINT };
-            case Format::rgb32_uint: return { .resource = DXGI_FORMAT_R32G32B32_UINT, .view = DXGI_FORMAT_R32G32B32_UINT };
             case Format::rgba32_uint: return { .resource = DXGI_FORMAT_R32G32B32A32_UINT, .view = DXGI_FORMAT_R32G32B32A32_UINT };
             case Format::r16_float: return { .resource = DXGI_FORMAT_R16_FLOAT, .view = DXGI_FORMAT_R16_FLOAT };
             case Format::rg16_float: return { .resource = DXGI_FORMAT_R16G16_FLOAT, .view = DXGI_FORMAT_R16G16_FLOAT };
             case Format::rgba16_float: return { .resource = DXGI_FORMAT_R16G16B16A16_FLOAT, .view = DXGI_FORMAT_R16G16B16A16_FLOAT };
             case Format::r32_float: return { .resource = DXGI_FORMAT_R32_FLOAT, .view = DXGI_FORMAT_R32_FLOAT };
             case Format::rg32_float: return { .resource = DXGI_FORMAT_R32G32_FLOAT, .view = DXGI_FORMAT_R32G32_FLOAT };
-            case Format::rgb32_float: return { .resource = DXGI_FORMAT_R32G32B32_FLOAT, .view = DXGI_FORMAT_R32G32B32_FLOAT };
             case Format::rgba32_float: return { .resource = DXGI_FORMAT_R32G32B32A32_FLOAT, .view = DXGI_FORMAT_R32G32B32A32_FLOAT };
             case Format::rgb10a2_unorm: return { .resource = DXGI_FORMAT_R10G10B10A2_UNORM, .view = DXGI_FORMAT_R10G10B10A2_UNORM };
             case Format::rg11b10_float: return { .resource = DXGI_FORMAT_R11G11B10_FLOAT, .view = DXGI_FORMAT_R11G11B10_FLOAT };
@@ -184,6 +182,8 @@ namespace gpu {
             case Format::bc3_srgb: return { .resource = DXGI_FORMAT_BC3_TYPELESS, .view = DXGI_FORMAT_BC3_UNORM_SRGB };
             case Format::bc3_unorm: return { .resource = DXGI_FORMAT_BC3_TYPELESS, .view = DXGI_FORMAT_BC3_UNORM };
             case Format::bc5_rg: return { .resource = DXGI_FORMAT_BC5_UNORM, .view = DXGI_FORMAT_BC5_UNORM };
+            case Format::bc6h_ufloat: return { .resource = DXGI_FORMAT_BC6H_UF16, .view = DXGI_FORMAT_BC6H_UF16 };
+            case Format::bc6h_sfloat: return { .resource = DXGI_FORMAT_BC6H_SF16, .view = DXGI_FORMAT_BC6H_SF16 };
             case Format::bc7_srgb: return { .resource = DXGI_FORMAT_BC7_TYPELESS, .view = DXGI_FORMAT_BC7_UNORM_SRGB };
             case Format::bc7_unorm: return { .resource = DXGI_FORMAT_BC7_TYPELESS, .view = DXGI_FORMAT_BC7_UNORM };
             case Format::undefined: return {};
@@ -267,7 +267,7 @@ namespace gpu {
                 sync |= D3D12_BARRIER_SYNC_INDEX_INPUT;
             if ((bits & static_cast<uint64>(Stage::vertex)) != 0)
                 sync |= D3D12_BARRIER_SYNC_VERTEX_SHADING;
-            if ((bits & static_cast<uint64>(Stage::mesh)) != 0)
+            if ((bits & static_cast<uint64>(Stage::mesh | Stage::task)) != 0)
                 sync |= D3D12_BARRIER_SYNC_VERTEX_SHADING;
             if ((bits & static_cast<uint64>(Stage::depth_stencil_tests)) != 0)
                 sync |= D3D12_BARRIER_SYNC_DEPTH_STENCIL;
@@ -330,7 +330,6 @@ namespace gpu {
     {
         Device* state = nullptr;
         ID3D12Fence* fence = nullptr;
-        HANDLE event = nullptr;
     };
 
     namespace detail {
@@ -371,13 +370,13 @@ namespace gpu {
         struct CommandContext
         {
             CommandContext* next = nullptr;
-            CommandContext* previous = nullptr;
+            ID3D12QueryHeap* timestamp_heap = nullptr;
+            uint64** timestamp_destinations = nullptr;
+            uint32 timestamp_count = 0;
             ID3D12CommandAllocator* allocator = nullptr;
             ID3D12GraphicsCommandList8* list = nullptr;
             CommandBuffer* commands = nullptr;
             TextureCopyScratch* texture_copy_scratch = nullptr;
-            uint64 retire_value = 0;
-            bool active = false;
         };
 
     } // namespace detail
@@ -388,7 +387,6 @@ namespace gpu {
         ID3D12Resource* resource = nullptr;
         TextureDesc desc{};
         FormatMapping formats{};
-        D3D12_BARRIER_LAYOUT layout = D3D12_BARRIER_LAYOUT_UNDEFINED;
     };
 
     struct RenderView
@@ -406,6 +404,7 @@ namespace gpu {
     struct PSOVariant
     {
         DepthStencilState state{};
+        ID3D12PipelineState* source_pipeline = nullptr;
         ID3D12PipelineState* pipeline = nullptr;
     };
 
@@ -416,6 +415,8 @@ namespace gpu {
         bool compute = false;
         bool mesh = false;
 
+        byte* task_stage = nullptr;
+        size_t task_stage_size = 0;
         byte* first_stage = nullptr; // Vertex or mesh shader.
         size_t first_stage_size = 0;
         byte* fragment_stage = nullptr;
@@ -426,10 +427,6 @@ namespace gpu {
         Format depth_format = Format::undefined;
         Format stencil_format = Format::undefined;
         RasterizationState rasterization{};
-
-        PSOVariant* variants = nullptr;
-        uint32 variant_count = 0;
-        uint32 variant_capacity = 0;
     };
 
     struct Swapchain
@@ -444,12 +441,41 @@ namespace gpu {
         uint32 image_index = 0;
     };
 
+    struct Queue
+    {
+        ID3D12CommandQueue* queue = nullptr;
+        D3D12_COMMAND_LIST_TYPE type = D3D12_COMMAND_LIST_TYPE_DIRECT;
+        ID3D12Fence* idle_fence = nullptr;
+        uint64 idle_value = 0;
+        ID3D12CommandList** submit_lists = nullptr;
+        size_t submit_capacity = 0;
+    };
+
+    struct CommandPool
+    {
+        Device* state = nullptr;
+        Queue* queue = nullptr;
+        detail::CommandContext* contexts = nullptr;
+        detail::CommandContext* last_context = nullptr;
+        detail::CommandContext* available = nullptr;
+        PSOVariant* variants = nullptr;
+        uint32 variant_count = 0;
+        uint32 variant_capacity = 0;
+        detail::IndirectSignature* indirect_signatures = nullptr;
+        uint32 indirect_signature_count = 0;
+        uint32 indirect_signature_capacity = 0;
+    };
+
     struct CommandBuffer
     {
         Device* state = nullptr;
+        CommandPool* pool = nullptr;
         detail::CommandContext* context = nullptr;
         ID3D12GraphicsCommandList8* list = nullptr;
         bool recording = false;
+        bool ended = false;
+        bool submitted = false;
+        RenderingFlags rendering_flags = RenderingFlags::none;
         bool rendering = false;
         const PSO* bound_pso = nullptr;
         ID3D12PipelineState* bound_pipeline = nullptr;
@@ -465,7 +491,9 @@ namespace gpu {
         IDXGIFactory6* factory = nullptr;
         IDXGIAdapter4* adapter = nullptr;
         ID3D12Device10* device = nullptr;
-        ID3D12CommandQueue* queue = nullptr;
+        Queue queues[max_queues_per_type * 3]{};
+        uint32 timestamp_query_count = 0;
+        mutable SRWLOCK resource_lock = SRWLOCK_INIT;
         ID3D12RootSignature* root_signature = nullptr;
         ID3D12InfoQueue* info_queue = nullptr;
 
@@ -482,24 +510,11 @@ namespace gpu {
         bool rtv_slots[256]{};
         bool dsv_slots[256]{};
         bool unrestricted_texture_copy_pitch = false;
-        detail::IndirectSignature* indirect_signatures = nullptr;
-        uint32 indirect_signature_count = 0;
-        uint32 indirect_signature_capacity = 0;
 
         detail::GpuHeapRecord** heaps = nullptr; // Indexed by heap id; slot zero stays null.
         uint32 heap_capacity = 0;
         uint32 heap_count = 1;
         uint32 available_heap_id = 1;
-
-        ID3D12Fence* command_retirement = nullptr;
-        HANDLE retirement_event = nullptr;
-        uint64 command_retirement_value = 0;
-        uint64 completed_command_retirement = 0;
-        detail::CommandContext* next_command_context = nullptr;
-        size_t command_context_count = 0;
-        uint32 active_command_buffers = 0;
-        ID3D12CommandList** submit_lists = nullptr;
-        size_t submit_capacity = 0;
 
         HWND window = nullptr;
         Swapchain* swapchain = nullptr;
@@ -515,12 +530,15 @@ namespace gpu {
 
         [[nodiscard]] uint32 register_heap(detail::GpuHeapRecord* record) noexcept
         {
+            AcquireSRWLockExclusive(&resource_lock);
             for (; available_heap_id < heap_count; ++available_heap_id)
             {
                 if (!heaps[available_heap_id])
                 {
                     heaps[available_heap_id] = record;
-                    return available_heap_id++;
+                    const uint32 id = available_heap_id++;
+                    ReleaseSRWLockExclusive(&resource_lock);
+                    return id;
                 }
             }
             if (heap_count >= heap_capacity)
@@ -539,15 +557,18 @@ namespace gpu {
             const uint32 id = heap_count++;
             heaps[id] = record;
             available_heap_id = heap_count;
+            ReleaseSRWLockExclusive(&resource_lock);
             return id;
         }
 
         [[nodiscard]] detail::GpuHeapRecord* find_heap(uint64 address) const noexcept
         {
+            AcquireSRWLockShared(&resource_lock);
             const uint32 id = static_cast<uint32>(address >> gpu_address_offset_bits);
             assert(id != 0 && id < heap_count && "GPU pointer does not belong to this device");
             detail::GpuHeapRecord* record = heaps[id];
             assert(record && "GPU pointer refers to a destroyed heap");
+            ReleaseSRWLockShared(&resource_lock);
             return record;
         }
 
@@ -564,37 +585,6 @@ namespace gpu {
             handle.ptr += size_t(slot) * sampler_descriptor_size;
             return handle;
         }
-
-        void poll_command_retirement() noexcept
-        {
-            if (!command_retirement || completed_command_retirement == command_retirement_value)
-                return;
-            const uint64 completed = command_retirement->GetCompletedValue();
-            assert(completed >= completed_command_retirement && completed <= command_retirement_value);
-            if (completed == completed_command_retirement)
-                return;
-            completed_command_retirement = completed;
-            reset_retired_command_contexts();
-        }
-
-        void wait_command_retirement(uint64 value) noexcept
-        {
-            assert(value <= command_retirement_value);
-            if (value > command_retirement->GetCompletedValue())
-            {
-                require_hr(command_retirement->SetEventOnCompletion(value, retirement_event));
-                WaitForSingleObject(retirement_event, INFINITE);
-            }
-            if (value > completed_command_retirement)
-                completed_command_retirement = value;
-            reset_retired_command_contexts();
-        }
-
-        void reset_retired_command_contexts() noexcept;
-        [[nodiscard]] Error create_command_context(detail::CommandContext& context) noexcept;
-        [[nodiscard]] Error grow_command_context_pool() noexcept;
-        [[nodiscard]] detail::CommandContext& acquire_command_context() noexcept;
-        void destroy_command_contexts() noexcept;
     };
 
     namespace {
@@ -652,116 +642,6 @@ namespace gpu {
 
     } // namespace
 
-    void Device::reset_retired_command_contexts() noexcept
-    {
-        detail::CommandContext* context = next_command_context;
-        if (!context)
-            return;
-        detail::CommandContext* current = context;
-        do
-        {
-            if (!current->active && current->retire_value != 0 && current->retire_value <= completed_command_retirement)
-            {
-                assert_hr(current->allocator->Reset());
-                current->retire_value = 0;
-            }
-            current = current->next;
-        } while (current != context);
-    }
-
-    Error Device::create_command_context(detail::CommandContext& context) noexcept
-    {
-        HRESULT result = device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&context.allocator));
-        if (FAILED(result))
-            return error_from_hresult(result);
-        result = device->CreateCommandList1(0, D3D12_COMMAND_LIST_TYPE_DIRECT, D3D12_COMMAND_LIST_FLAG_NONE, IID_PPV_ARGS(&context.list));
-        if (FAILED(result))
-        {
-            release(context.allocator);
-            return error_from_hresult(result);
-        }
-        context.commands = new CommandBuffer{
-            .state = this,
-            .context = &context,
-            .list = context.list,
-        };
-        return Error::none;
-    }
-
-    Error Device::grow_command_context_pool() noexcept
-    {
-        detail::CommandContext* context = new detail::CommandContext;
-        const Error error = create_command_context(*context);
-        if (error != Error::none)
-        {
-            delete context;
-            return error;
-        }
-        if (!next_command_context)
-        {
-            context->next = context;
-            context->previous = context;
-            next_command_context = context;
-        }
-        else
-        {
-            context->next = next_command_context;
-            context->previous = next_command_context->previous;
-            next_command_context->previous->next = context;
-            next_command_context->previous = context;
-        }
-        ++command_context_count;
-        return Error::none;
-    }
-
-    detail::CommandContext& Device::acquire_command_context() noexcept
-    {
-        detail::CommandContext* context = next_command_context;
-        assert(context);
-        if (active_command_buffers == 0 && context->retire_value > completed_command_retirement)
-            poll_command_retirement();
-        if (context->active || context->retire_value > completed_command_retirement)
-        {
-            const Error error = grow_command_context_pool();
-            if (error != Error::none)
-                abort();
-            context = next_command_context->previous;
-        }
-        if (context->retire_value != 0)
-        {
-            assert_hr(context->allocator->Reset());
-            context->retire_value = 0;
-        }
-        next_command_context = context->next;
-        return *context;
-    }
-
-    void Device::destroy_command_contexts() noexcept
-    {
-        detail::CommandContext* context = next_command_context;
-        if (!context)
-            return;
-        context->previous->next = nullptr;
-        while (context)
-        {
-            detail::CommandContext* next = context->next;
-            while (context->texture_copy_scratch)
-            {
-                detail::TextureCopyScratch* scratch = context->texture_copy_scratch;
-                context->texture_copy_scratch = scratch->next;
-                release(scratch->resource);
-                delete scratch;
-            }
-            delete context->commands;
-            release(context->list);
-            release(context->allocator);
-            delete context;
-            context = next;
-        }
-        next_command_context = nullptr;
-        command_context_count = 0;
-    }
-
     namespace {
 
         DeviceInit fail_device_creation(Device* state, Error error) noexcept;
@@ -799,10 +679,32 @@ namespace gpu {
             state.device->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS13, &options13, sizeof(options13));
             state.unrestricted_texture_copy_pitch = options13.UnrestrictedBufferTextureCopyPitchSupported != FALSE;
 
-            const D3D12_COMMAND_QUEUE_DESC queue_desc{ .Type = D3D12_COMMAND_LIST_TYPE_DIRECT };
-            Error error = error_from_hresult(state.device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&state.queue)));
+            state.caps.general_queue_count = desc.desired_queue_count < max_queues_per_type ? desc.desired_queue_count : max_queues_per_type;
+            state.caps.compute_queue_count = desc.desired_compute_queue_count < max_queues_per_type ? desc.desired_compute_queue_count : max_queues_per_type;
+            state.caps.copy_queue_count = desc.desired_copy_queue_count < max_queues_per_type ? desc.desired_copy_queue_count : max_queues_per_type;
+            state.caps.queue_count = state.caps.general_queue_count + state.caps.compute_queue_count + state.caps.copy_queue_count;
+            state.timestamp_query_count = desc.timestamp_query_count;
+            assert(state.caps.general_queue_count != 0);
+            Error error = Error::none;
+            for (uint32 index = 0; index < state.caps.queue_count; ++index)
+            {
+                Queue& queue = state.queues[index];
+                queue.type = index < state.caps.general_queue_count                                    ? D3D12_COMMAND_LIST_TYPE_DIRECT
+                             : index < state.caps.general_queue_count + state.caps.compute_queue_count ? D3D12_COMMAND_LIST_TYPE_COMPUTE
+                                                                                                       : D3D12_COMMAND_LIST_TYPE_COPY;
+                const D3D12_COMMAND_QUEUE_DESC queue_desc{ .Type = queue.type };
+                error = error_from_hresult(state.device->CreateCommandQueue(&queue_desc, IID_PPV_ARGS(&queue.queue)));
+                if (error != Error::none)
+                    return error;
+                error = error_from_hresult(state.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&queue.idle_fence)));
+                if (error != Error::none)
+                    return error;
+            }
+            uint64 frequency = 0;
+            error = error_from_hresult(state.queues[0].queue->GetTimestampFrequency(&frequency));
             if (error != Error::none)
                 return error;
+            state.caps.timestamp_period_ns = 1000000000.0f / static_cast<float>(frequency);
 
             // One root signature for every PSO: 64 root constants plus directly indexed heaps.
             const D3D12_ROOT_PARAMETER1 root_parameter{
@@ -858,20 +760,6 @@ namespace gpu {
             state.sampler_descriptor_size = state.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER);
             state.rtv_descriptor_size = state.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
             state.dsv_descriptor_size = state.device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
-
-            error = error_from_hresult(state.device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&state.command_retirement)));
-            if (error != Error::none)
-                return error;
-            state.retirement_event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-            if (!state.retirement_event)
-                return Error::driver_error;
-
-            for (uint32 index = 0; index < initial_command_context_count; ++index)
-            {
-                error = state.grow_command_context_pool();
-                if (error != Error::none)
-                    return error;
-            }
 
             for (uint32 index = 0; index < format_count; ++index)
             {
@@ -933,6 +821,8 @@ namespace gpu {
             D3D12_MESSAGE_ID denied[]{
                 D3D12_MESSAGE_ID_CLEARDEPTHSTENCILVIEW_MISMATCHINGCLEARVALUE,
                 D3D12_MESSAGE_ID_CLEARRENDERTARGETVIEW_MISMATCHINGCLEARVALUE,
+                // Standalone global barriers can synchronize work submitted in other command lists.
+                D3D12_MESSAGE_ID_NON_OPTIMAL_BARRIER_ONLY_EXECUTE_COMMAND_LISTS,
             };
             D3D12_INFO_QUEUE_FILTER filter{};
             filter.DenyList.NumIDs = static_cast<uint32>(sizeof(denied) / sizeof(denied[0]));
@@ -950,10 +840,16 @@ namespace gpu {
 
         state->caps = {
             .device_name = state->device_name,
+            .queue_count = state->caps.queue_count,
+            .general_queue_count = state->caps.general_queue_count,
+            .compute_queue_count = state->caps.compute_queue_count,
+            .copy_queue_count = state->caps.copy_queue_count,
             .max_push_data_size = max_push_data_size,
             .texture_heap_alignment = D3D12_DEFAULT_RESOURCE_PLACEMENT_ALIGNMENT,
             .texture_descriptor_size = state->resource_descriptor_size,
             .sampler_descriptor_size = state->sampler_descriptor_size,
+            .timestamp_period_ns = state->caps.timestamp_period_ns,
+            .sub_texel_precision_bits = D3D12_SUBTEXEL_FRACTIONAL_BIT_COUNT,
             .texture_compression_bc = true,
             .texture_compression_astc = false,
             .storage_input_output16 = native16.Native16BitShaderOpsSupported != FALSE,
@@ -985,8 +881,7 @@ namespace gpu {
     {
         if (!device)
             return;
-        if (device->queue && device->command_retirement)
-            wait_idle(device);
+
         if (device->swapchain)
         {
             destroy_swapchain(*device->swapchain);
@@ -996,21 +891,18 @@ namespace gpu {
         drain_debug_messages(device->info_queue);
         if (active_info_queue == device->info_queue)
             active_info_queue = nullptr;
-        device->destroy_command_contexts();
-        if (device->retirement_event)
-            CloseHandle(device->retirement_event);
-        for (uint32 index = 0; index < device->indirect_signature_count; ++index)
-            release(device->indirect_signatures[index].signature);
-        free(device->indirect_signatures);
-        free(device->submit_lists);
+        for (uint32 index = 0; index < device->caps.queue_count; ++index)
+        {
+            free(device->queues[index].submit_lists);
+            release(device->queues[index].idle_fence);
+            release(device->queues[index].queue);
+        }
         free(device->heaps);
-        release(device->command_retirement);
         release(device->dsv_heap);
         release(device->rtv_heap);
         release(device->sampler_heap);
         release(device->resource_heap);
         release(device->root_signature);
-        release(device->queue);
         release(device->info_queue);
         release(device->device);
         release(device->adapter);
@@ -1062,9 +954,6 @@ namespace gpu {
         assert(device && "create_timeline_semaphore called with a null device");
         TimelineSemaphore* result = new TimelineSemaphore{ .state = device };
         require_hr(device->device->CreateFence(initial_value, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&result->fence)));
-        result->event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-        if (!result->event)
-            abort();
         return result;
     }
 
@@ -1073,8 +962,6 @@ namespace gpu {
         if (!semaphore)
             return;
         assert(semaphore->state && semaphore->fence && "destroy_timeline_semaphore received an invalid semaphore");
-        if (semaphore->event)
-            CloseHandle(semaphore->event);
         release(semaphore->fence);
         delete semaphore;
     }
@@ -1090,16 +977,22 @@ namespace gpu {
         assert(point.semaphore && point.semaphore->fence && "wait_timeline received an invalid timeline point");
         if (point.semaphore->fence->GetCompletedValue() >= point.value)
             return;
-        require_hr(point.semaphore->fence->SetEventOnCompletion(point.value, point.semaphore->event));
-        WaitForSingleObject(point.semaphore->event, INFINITE);
+        require_hr(point.semaphore->fence->SetEventOnCompletion(point.value, nullptr));
     }
 
     void wait_idle(Device* device) noexcept
     {
         assert(device && "wait_idle called with a null device");
-        const uint64 value = ++device->command_retirement_value;
-        require_hr(device->queue->Signal(device->command_retirement, value));
-        device->wait_command_retirement(value);
+        for (uint32 index = 0; index < device->caps.queue_count; ++index)
+        {
+            Queue& queue = device->queues[index];
+            require_hr(queue.queue->Signal(queue.idle_fence, ++queue.idle_value));
+        }
+        for (uint32 index = 0; index < device->caps.queue_count; ++index)
+        {
+            Queue& queue = device->queues[index];
+            require_hr(queue.idle_fence->SetEventOnCompletion(queue.idle_value, nullptr));
+        }
     }
 
     // ---------------------------------------------------------------------------
@@ -1108,8 +1001,9 @@ namespace gpu {
 
     namespace {
 
-        [[nodiscard]] uint32 allocate_descriptor_slots(bool* slots, uint32 capacity, uint32 count) noexcept
+        [[nodiscard]] uint32 allocate_descriptor_slots(SRWLOCK& lock, bool* slots, uint32 capacity, uint32 count) noexcept
         {
+            AcquireSRWLockExclusive(&lock);
             uint32 available_count = 0;
             for (uint32 slot = 0; slot < capacity; ++slot)
             {
@@ -1118,8 +1012,10 @@ namespace gpu {
                     continue;
                 const uint32 first = slot + 1 - count;
                 memset(slots + first, true, count * sizeof(bool));
+                ReleaseSRWLockExclusive(&lock);
                 return first;
             }
+            ReleaseSRWLockExclusive(&lock);
             assert(false && "descriptor heap capacity exceeded");
             return 0;
         }
@@ -1208,6 +1104,7 @@ namespace gpu {
             record->shadow = static_cast<byte*>(malloc(size != 0 ? size : 1));
             record->descriptor_count = count;
             record->descriptor_base = allocate_descriptor_slots(
+                device.resource_lock,
                 texture_heap ? device.resource_slots : device.sampler_slots,
                 texture_heap ? internal_descriptor_base : sampler_descriptor_capacity,
                 count
@@ -1228,6 +1125,7 @@ namespace gpu {
         // Descriptor writes address the shadow allocation, so the owning heap is found by pointer range.
         [[nodiscard]] detail::GpuHeapRecord* find_descriptor_heap(const Device& device, const void* cpu_destination, uint64& slot) noexcept
         {
+            AcquireSRWLockShared(&device.resource_lock);
             const byte* target = static_cast<const byte*>(cpu_destination);
             for (uint32 id = 1; id < device.heap_count; ++id)
             {
@@ -1241,8 +1139,10 @@ namespace gpu {
                     record->memory == MemoryType::texture_descriptor_heap ? device.caps.texture_descriptor_size : device.caps.sampler_descriptor_size;
                 assert(offset % slot_size == 0 && "descriptor destination is not aligned to a descriptor slot");
                 slot = offset / slot_size;
+                ReleaseSRWLockShared(&device.resource_lock);
                 return record;
             }
+            ReleaseSRWLockShared(&device.resource_lock);
             assert(false && "descriptor destination does not belong to a live descriptor heap");
             return nullptr;
         }
@@ -1271,10 +1171,7 @@ namespace gpu {
         Device* device = record->state;
         assert(&record->owner == owner && "destroy_gpu_heap owner does not match its heap");
 
-        if (record->mapped)
-            record->resource->Unmap(0, nullptr);
-        release(record->resource);
-        free(record->shadow);
+        AcquireSRWLockExclusive(&device->resource_lock);
         assert(record->heap_id < device->heap_count);
         device->heaps[record->heap_id] = nullptr;
         if (record->heap_id < device->available_heap_id)
@@ -1284,6 +1181,11 @@ namespace gpu {
         else if (record->memory == MemoryType::sampler_descriptor_heap)
             memset(device->sampler_slots + record->descriptor_base, false, record->descriptor_count * sizeof(bool));
         record->owner = {};
+        ReleaseSRWLockExclusive(&device->resource_lock);
+        if (record->mapped)
+            record->resource->Unmap(0, nullptr);
+        release(record->resource);
+        free(record->shadow);
         delete record;
     }
 
@@ -1298,7 +1200,7 @@ namespace gpu {
             D3D12_RESOURCE_FLAGS flags = D3D12_RESOURCE_FLAG_NONE;
             const uint32 usage = static_cast<uint32>(desc.usage);
             if ((usage & static_cast<uint32>(TextureUsage::storage)) != 0)
-                flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+                flags |= D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS | D3D12_RESOURCE_FLAG_ALLOW_SIMULTANEOUS_ACCESS;
             if ((usage & static_cast<uint32>(TextureUsage::color_attachment)) != 0)
                 flags |= D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
             if ((usage & static_cast<uint32>(TextureUsage::depth_stencil_attachment)) != 0)
@@ -1372,19 +1274,21 @@ namespace gpu {
         return { .size = info.SizeInBytes, .align = info.Alignment };
     }
 
-    Texture* create_texture(Device* device, const TextureDesc& desc, const TextureHeap& heap, uint64 offset) noexcept
+    Texture* create_texture(CommandBuffer* commands, const TextureDesc& desc, const TextureHeap& heap, uint64 offset) noexcept
     {
+        assert(commands && commands->recording);
+        Device* device = commands->state;
         assert(device && heap.owner && heap.owner->heap && "create_texture requires a device and a live texture heap");
         const FormatMapping formats = map_format(desc.format);
         assert(formats.resource != DXGI_FORMAT_UNKNOWN && "texture format is not supported by the D3D12 backend");
         const D3D12_RESOURCE_DESC1 resource_desc = make_texture_desc(desc, formats);
 
-        Texture* texture = new Texture{ .state = device, .desc = desc, .formats = formats, .layout = D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_COMMON };
+        Texture* texture = new Texture{ .state = device, .desc = desc, .formats = formats };
         require_hr(device->device->CreatePlacedResource2(
             heap.owner->heap,
             offset,
             &resource_desc,
-            D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_COMMON,
+            D3D12_BARRIER_LAYOUT_COMMON,
             nullptr,
             0,
             nullptr,
@@ -1411,7 +1315,7 @@ namespace gpu {
         RenderView* view = new RenderView{ .state = device, .texture = texture, .desc = desc, .depth_stencil = depth_stencil };
         if (depth_stencil)
         {
-            view->slot = allocate_descriptor_slots(device->dsv_slots, 256, 1);
+            view->slot = allocate_descriptor_slots(device->resource_lock, device->dsv_slots, 256, 1);
             view->handle = device->dsv_heap->GetCPUDescriptorHandleForHeapStart();
             view->handle.ptr += size_t(view->slot) * device->dsv_descriptor_size;
             D3D12_DEPTH_STENCIL_VIEW_DESC dsv{ .Format = texture->formats.depth };
@@ -1429,7 +1333,7 @@ namespace gpu {
         }
         else
         {
-            view->slot = allocate_descriptor_slots(device->rtv_slots, 256, 1);
+            view->slot = allocate_descriptor_slots(device->resource_lock, device->rtv_slots, 256, 1);
             view->handle = device->rtv_heap->GetCPUDescriptorHandleForHeapStart();
             view->handle.ptr += size_t(view->slot) * device->rtv_descriptor_size;
             D3D12_RENDER_TARGET_VIEW_DESC rtv{ .Format = texture->formats.view };
@@ -1458,10 +1362,12 @@ namespace gpu {
         if (!render_view)
             return;
         assert(render_view->state && "destroy_render_view received an invalid view");
+        AcquireSRWLockExclusive(&render_view->state->resource_lock);
         if (render_view->depth_stencil)
             render_view->state->dsv_slots[render_view->slot] = false;
         else
             render_view->state->rtv_slots[render_view->slot] = false;
+        ReleaseSRWLockExclusive(&render_view->state->resource_lock);
         delete render_view;
     }
 
@@ -1636,12 +1542,12 @@ namespace gpu {
                               .format = swapchain.format,
                               .usage = TextureUsage::color_attachment },
                     .formats = formats,
-                    .layout = D3D12_BARRIER_LAYOUT_PRESENT,
+
                 };
                 swapchain.textures[index] = texture;
 
                 RenderView* view = new RenderView{ .state = &device, .texture = texture };
-                view->slot = allocate_descriptor_slots(device.rtv_slots, 256, 1);
+                view->slot = allocate_descriptor_slots(device.resource_lock, device.rtv_slots, 256, 1);
                 view->handle = device.rtv_heap->GetCPUDescriptorHandleForHeapStart();
                 view->handle.ptr += size_t(view->slot) * device.rtv_descriptor_size;
                 const D3D12_RENDER_TARGET_VIEW_DESC rtv{ .Format = formats.view, .ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D };
@@ -1679,7 +1585,7 @@ namespace gpu {
                     .AlphaMode = DXGI_ALPHA_MODE_IGNORE,
                 };
                 IDXGISwapChain1* created = nullptr;
-                HRESULT result = device.factory->CreateSwapChainForHwnd(device.queue, device.window, &desc, nullptr, nullptr, &created);
+                HRESULT result = device.factory->CreateSwapChainForHwnd(device.queues[0].queue, device.window, &desc, nullptr, nullptr, &created);
                 if (FAILED(result))
                     return error_from_hresult(result);
                 result = created->QueryInterface(IID_PPV_ARGS(&swapchain.swapchain));
@@ -1716,8 +1622,10 @@ namespace gpu {
         return window_extent(device->window);
     }
 
-    SwapchainFrame acquire(Device* device) noexcept
+    SwapchainFrame acquire(CommandBuffer* commands) noexcept
     {
+        assert(commands && commands->recording);
+        Device* device = commands->state;
         assert(device && device->swapchain && "acquire requires a windowed device");
         Swapchain& swapchain = *device->swapchain;
         const uint32x2 extent = window_extent(device->window);
@@ -1872,6 +1780,7 @@ namespace gpu {
         {
             StreamSubobject<ID3D12RootSignature*, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_ROOT_SIGNATURE> root_signature;
             StreamSubobject<D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_VS> vertex;
+            StreamSubobject<D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS> task;
             StreamSubobject<D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS> mesh;
             StreamSubobject<D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS> fragment;
             StreamSubobject<D3D12_BLEND_DESC, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_BLEND> blend;
@@ -1892,6 +1801,7 @@ namespace gpu {
                 stream.mesh.value = { .pShaderBytecode = pso.first_stage, .BytecodeLength = pso.first_stage_size };
             else
                 stream.vertex.value = { .pShaderBytecode = pso.first_stage, .BytecodeLength = pso.first_stage_size };
+            stream.task.value = { .pShaderBytecode = pso.task_stage, .BytecodeLength = pso.task_stage_size };
             stream.fragment.value = { .pShaderBytecode = pso.fragment_stage, .BytecodeLength = pso.fragment_stage_size };
             stream.blend.value = map_blend(pso.color_targets, pso.color_target_count);
             stream.rasterizer.value = map_rasterization(pso.rasterization);
@@ -1927,11 +1837,13 @@ namespace gpu {
             Format depth_format,
             Format stencil_format,
             const RasterizationState& rasterization,
-            bool mesh
+            bool mesh,
+            Span<const uint32> task_stage = {}
         ) noexcept
         {
             assert(color_targets.size <= max_color_attachments && "too many color targets");
             PSO* pso = new PSO{ .state = device, .mesh = mesh };
+            pso->task_stage = copy_shader_code(task_stage, pso->task_stage_size);
             pso->first_stage = copy_shader_code(first_stage, pso->first_stage_size);
             pso->fragment_stage = copy_shader_code(fragment_stage, pso->fragment_stage_size);
             pso->color_target_count = static_cast<uint32>(color_targets.size);
@@ -1974,7 +1886,8 @@ namespace gpu {
             desc.depth_format,
             desc.stencil_format,
             desc.rasterization,
-            true
+            true,
+            desc.task_spirv
         );
     }
 
@@ -1995,9 +1908,8 @@ namespace gpu {
     {
         if (!pso)
             return;
-        for (uint32 index = 0; index < pso->variant_count; ++index)
-            release(pso->variants[index].pipeline);
-        free(pso->variants);
+
+        free(pso->task_stage);
         free(pso->first_stage);
         free(pso->fragment_stage);
         release(pso->pipeline);
@@ -2018,22 +1930,26 @@ namespace gpu {
             D3D12_BARRIER_ACCESS access
         ) noexcept
         {
-            if (texture.layout == layout)
+            const bool entering = layout != D3D12_BARRIER_LAYOUT_COMMON;
+            if ((static_cast<uint32>(commands.rendering_flags) & static_cast<uint32>(entering ? RenderingFlags::resuming : RenderingFlags::suspending)) != 0)
                 return;
+            if ((static_cast<uint32>(texture.desc.usage) & static_cast<uint32>(TextureUsage::storage)) != 0)
+                return;
+            const D3D12_BARRIER_LAYOUT attachment_layout =
+                texture.formats.depth != DXGI_FORMAT_UNKNOWN ? D3D12_BARRIER_LAYOUT_DEPTH_STENCIL_WRITE : D3D12_BARRIER_LAYOUT_RENDER_TARGET;
             assert(commands.list && "texture transitions require a recording command buffer");
             const D3D12_TEXTURE_BARRIER barrier{
                 .SyncBefore = D3D12_BARRIER_SYNC_ALL,
                 .SyncAfter = sync,
                 .AccessBefore = D3D12_BARRIER_ACCESS_COMMON,
                 .AccessAfter = access,
-                .LayoutBefore = texture.layout,
+                .LayoutBefore = entering ? D3D12_BARRIER_LAYOUT_COMMON : attachment_layout,
                 .LayoutAfter = layout,
                 .pResource = texture.resource,
                 .Subresources = { .IndexOrFirstMipLevel = 0xffffffffu },
             };
             const D3D12_BARRIER_GROUP group{ .Type = D3D12_BARRIER_TYPE_TEXTURE, .NumBarriers = 1, .pTextureBarriers = &barrier };
             commands.list->Barrier(1, &group);
-            texture.layout = layout;
         }
 
         // The API sets depth-stencil state dynamically, so the matching pipeline variant is chosen at
@@ -2050,25 +1966,27 @@ namespace gpu {
             ID3D12PipelineState* pipeline = pso->pipeline;
             if (memcmp(&commands.depth_stencil, &default_state, sizeof(DepthStencilState)) != 0)
             {
-                PSO* mutable_pso = const_cast<PSO*>(pso);
+                CommandPool* pool = commands.pool;
                 pipeline = nullptr;
-                for (uint32 index = 0; index < pso->variant_count; ++index)
+                for (uint32 index = 0; index < pool->variant_count; ++index)
                 {
-                    if (memcmp(&pso->variants[index].state, &commands.depth_stencil, sizeof(DepthStencilState)) == 0)
+                    if (pool->variants[index].source_pipeline == pso->pipeline &&
+                        memcmp(&pool->variants[index].state, &commands.depth_stencil, sizeof(DepthStencilState)) == 0)
                     {
-                        pipeline = pso->variants[index].pipeline;
+                        pipeline = pool->variants[index].pipeline;
                         break;
                     }
                 }
                 if (!pipeline)
                 {
-                    if (mutable_pso->variant_count == mutable_pso->variant_capacity)
+                    if (pool->variant_count == pool->variant_capacity)
                     {
-                        mutable_pso->variant_capacity = mutable_pso->variant_capacity == 0 ? 4u : mutable_pso->variant_capacity * 2u;
-                        mutable_pso->variants = static_cast<PSOVariant*>(realloc(mutable_pso->variants, mutable_pso->variant_capacity * sizeof(PSOVariant)));
+                        pool->variant_capacity = pool->variant_capacity == 0 ? 4u : pool->variant_capacity * 2u;
+                        pool->variants = static_cast<PSOVariant*>(realloc(pool->variants, pool->variant_capacity * sizeof(PSOVariant)));
                     }
                     pipeline = create_pipeline_variant(*pso, commands.depth_stencil);
-                    mutable_pso->variants[mutable_pso->variant_count++] = { .state = commands.depth_stencil, .pipeline = pipeline };
+                    pso->pipeline->AddRef();
+                    pool->variants[pool->variant_count++] = { .state = commands.depth_stencil, .source_pipeline = pso->pipeline, .pipeline = pipeline };
                 }
             }
 
@@ -2095,30 +2013,127 @@ namespace gpu {
 
     } // namespace
 
-    CommandBuffer* begin_commands(Device* device) noexcept
+    CommandPool* create_command_pool(Device* device, uint32 queue_index) noexcept
     {
-        assert(device && "begin_commands called with a null device");
-        detail::CommandContext& context = device->acquire_command_context();
-        CommandBuffer& commands = *context.commands;
+        assert(device && queue_index < device->caps.queue_count);
+        return new CommandPool{ .state = device, .queue = &device->queues[queue_index] };
+    }
 
-        assert_hr(context.list->Reset(context.allocator, nullptr));
-        context.active = true;
-        commands.recording = true;
-        commands.rendering = false;
-        commands.bound_pso = nullptr;
-        commands.bound_pipeline = nullptr;
-        commands.swapchain = nullptr;
-        commands.color_view_count = 0;
-        commands.depth_view = nullptr;
+    void destroy_command_pool(CommandPool* pool) noexcept
+    {
+        if (!pool)
+            return;
+        while (pool->contexts)
+        {
+            detail::CommandContext* context = pool->contexts;
+            pool->contexts = context->next;
+            while (context->texture_copy_scratch)
+            {
+                detail::TextureCopyScratch* scratch = context->texture_copy_scratch;
+                context->texture_copy_scratch = scratch->next;
+                release(scratch->resource);
+                delete scratch;
+            }
+            release(context->timestamp_heap);
+            free(context->timestamp_destinations);
+            release(context->list);
+            release(context->allocator);
+            delete context->commands;
+            delete context;
+        }
+        for (uint32 index = 0; index < pool->indirect_signature_count; ++index)
+            release(pool->indirect_signatures[index].signature);
+        free(pool->indirect_signatures);
+        for (uint32 index = 0; index < pool->variant_count; ++index)
+        {
+            release(pool->variants[index].source_pipeline);
+            release(pool->variants[index].pipeline);
+        }
+        free(pool->variants);
+        delete pool;
+    }
 
-        // Both shader-visible heaps stay bound for the whole list; SM 6.6 indexes them directly.
-        ID3D12DescriptorHeap* heaps[2]{ device->resource_heap, device->sampler_heap };
-        context.list->SetDescriptorHeaps(2, heaps);
-        context.list->SetGraphicsRootSignature(device->root_signature);
-        context.list->SetComputeRootSignature(device->root_signature);
+    void reset_command_pool(CommandPool* pool) noexcept
+    {
+        assert(pool);
+        for (detail::CommandContext* context = pool->contexts; context; context = context->next)
+        {
+            if (context->commands->recording)
+                assert_hr(context->list->Close());
+            context->commands->recording = false;
+            context->commands->ended = false;
+            assert_hr(context->allocator->Reset());
+        }
+        pool->available = pool->contexts;
+    }
 
-        ++device->active_command_buffers;
-        return &commands;
+    CommandBuffer* begin_commands(CommandPool* pool) noexcept
+    {
+        assert(pool);
+        Device* device = pool->state;
+        detail::CommandContext* context = pool->available;
+        if (context)
+            pool->available = context->next;
+        else
+        {
+            context = new detail::CommandContext;
+            if (pool->last_context)
+                pool->last_context->next = context;
+            else
+                pool->contexts = context;
+            pool->last_context = context;
+            require_hr(device->device->CreateCommandAllocator(pool->queue->type, IID_PPV_ARGS(&context->allocator)));
+            require_hr(device->device->CreateCommandList1(0, pool->queue->type, D3D12_COMMAND_LIST_FLAG_NONE, IID_PPV_ARGS(&context->list)));
+            context->commands = new CommandBuffer{ .state = device, .pool = pool, .context = context, .list = context->list };
+            if (device->timestamp_query_count)
+            {
+                const D3D12_QUERY_HEAP_DESC query_desc{
+                    .Type = pool->queue->type == D3D12_COMMAND_LIST_TYPE_COPY ? D3D12_QUERY_HEAP_TYPE_COPY_QUEUE_TIMESTAMP : D3D12_QUERY_HEAP_TYPE_TIMESTAMP,
+                    .Count = device->timestamp_query_count,
+                };
+                require_hr(device->device->CreateQueryHeap(&query_desc, IID_PPV_ARGS(&context->timestamp_heap)));
+                context->timestamp_destinations = static_cast<uint64**>(malloc(device->timestamp_query_count * sizeof(uint64*)));
+            }
+        }
+        *context->commands = { .state = device, .pool = pool, .context = context, .list = context->list, .recording = true };
+        context->timestamp_count = 0;
+        assert_hr(context->list->Reset(context->allocator, nullptr));
+        if (pool->queue->type != D3D12_COMMAND_LIST_TYPE_COPY)
+        {
+            ID3D12DescriptorHeap* heaps[2]{ device->resource_heap, device->sampler_heap };
+            context->list->SetDescriptorHeaps(2, heaps);
+            context->list->SetComputeRootSignature(device->root_signature);
+            if (pool->queue->type == D3D12_COMMAND_LIST_TYPE_DIRECT)
+                context->list->SetGraphicsRootSignature(device->root_signature);
+        }
+        return context->commands;
+    }
+
+    void write_timestamp(CommandBuffer* commands, uint64* gpu_destination, Stage stage) noexcept
+    {
+        assert(commands && commands->recording);
+        detail::CommandContext& context = *commands->context;
+        if (!context.timestamp_heap)
+            return;
+        assert(context.timestamp_count < commands->state->timestamp_query_count);
+        assert((reinterpret_cast<uint64>(gpu_destination) & 7) == 0);
+        context.timestamp_destinations[context.timestamp_count] = gpu_destination;
+        commands->list->EndQuery(context.timestamp_heap, D3D12_QUERY_TYPE_TIMESTAMP, context.timestamp_count++);
+        (void)stage;
+    }
+
+    void end_commands(CommandBuffer* commands) noexcept
+    {
+        assert(commands && commands->recording && !commands->rendering);
+        detail::CommandContext& context = *commands->context;
+        for (uint32 index = 0; index < context.timestamp_count; ++index)
+        {
+            const DecodedRange destination = decode_gpu_range(*commands->state, { .gpu = context.timestamp_destinations[index], .size = sizeof(uint64) });
+            commands->list->ResolveQueryData(context.timestamp_heap, D3D12_QUERY_TYPE_TIMESTAMP, index, 1, destination.heap->resource, destination.offset);
+        }
+        assert_hr(commands->list->Close());
+        commands->recording = false;
+        commands->ended = true;
     }
 
     void set_texture_descriptor_heap(CommandBuffer* commands, GpuRange heap) noexcept
@@ -2260,7 +2275,7 @@ namespace gpu {
                     }
                     if (upload)
                     {
-                        const D3D12_BOX region{ .right = width, .bottom = height, .back = 1 };
+                        const D3D12_BOX region{ .right = footprint.Footprint.Width, .bottom = footprint.Footprint.Height, .back = 1 };
                         commands.list->CopyTextureRegion(
                             &texture_location,
                             copy.offset.x,
@@ -2275,8 +2290,8 @@ namespace gpu {
                         const D3D12_BOX region{ .left = copy.offset.x,
                                                 .top = copy.offset.y,
                                                 .front = copy.offset.z + slice,
-                                                .right = copy.offset.x + width,
-                                                .bottom = copy.offset.y + height,
+                                                .right = copy.offset.x + footprint.Footprint.Width,
+                                                .bottom = copy.offset.y + footprint.Footprint.Height,
                                                 .back = copy.offset.z + slice + 1 };
                         commands.list->CopyTextureRegion(&buffer_location, 0, 0, 0, &texture_location, format.depth ? nullptr : &region);
                         if (!direct)
@@ -2345,11 +2360,13 @@ namespace gpu {
         commands->list->Barrier(1, &group);
     }
 
-    void begin_render_pass(CommandBuffer* commands, const RenderingDesc& desc) noexcept
+    void begin_render_pass(CommandBuffer* commands, const RenderingDesc& desc, RenderingFlags rendering_flags) noexcept
     {
         assert(commands && commands->recording && !commands->rendering && "begin_render_pass requires a recording command buffer");
         assert(desc.colors.size <= max_color_attachments && "too many color attachments");
 
+        commands->rendering_flags = rendering_flags;
+        const bool resuming = (static_cast<uint32>(rendering_flags) & static_cast<uint32>(RenderingFlags::resuming)) != 0;
         D3D12_CPU_DESCRIPTOR_HANDLE color_handles[max_color_attachments]{};
         uint32x2 extent{};
         commands->color_view_count = static_cast<uint32>(desc.colors.size);
@@ -2396,12 +2413,12 @@ namespace gpu {
         for (size_t index = 0; index < desc.colors.size; ++index)
         {
             const ColorAttachment& attachment = desc.colors.data[index];
-            if (attachment.load == LoadOp::clear)
+            if (!resuming && attachment.load == LoadOp::clear)
             {
                 const float clear[4]{ attachment.clear.x, attachment.clear.y, attachment.clear.z, attachment.clear.w };
                 commands->list->ClearRenderTargetView(color_handles[index], clear, 0, nullptr);
             }
-            else if (attachment.load == LoadOp::discard)
+            else if (!resuming && attachment.load == LoadOp::discard)
             {
                 const RenderView& view = *attachment.render_view;
                 // A volume slice shares its subresource with other slices, so preserve it instead of discarding the whole mip.
@@ -2418,9 +2435,9 @@ namespace gpu {
         if (depth_view)
         {
             D3D12_CLEAR_FLAGS flags{};
-            if (desc.depth.render_view && desc.depth.load == LoadOp::clear)
+            if (!resuming && desc.depth.render_view && desc.depth.load == LoadOp::clear)
                 flags |= D3D12_CLEAR_FLAG_DEPTH;
-            if (desc.stencil.render_view && desc.stencil.load == LoadOp::clear)
+            if (!resuming && desc.stencil.render_view && desc.stencil.load == LoadOp::clear)
                 flags |= D3D12_CLEAR_FLAG_STENCIL;
             if (flags != 0)
                 commands->list->ClearDepthStencilView(depth_view->handle, flags, desc.depth.clear, desc.stencil.clear, 0, nullptr);
@@ -2451,20 +2468,14 @@ namespace gpu {
             transition_texture(
                 *commands,
                 *commands->color_views[index]->texture,
-                D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_COMMON,
+                D3D12_BARRIER_LAYOUT_COMMON,
                 D3D12_BARRIER_SYNC_ALL,
                 D3D12_BARRIER_ACCESS_COMMON
             );
         }
         if (commands->depth_view)
         {
-            transition_texture(
-                *commands,
-                *commands->depth_view->texture,
-                D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_COMMON,
-                D3D12_BARRIER_SYNC_ALL,
-                D3D12_BARRIER_ACCESS_COMMON
-            );
+            transition_texture(*commands, *commands->depth_view->texture, D3D12_BARRIER_LAYOUT_COMMON, D3D12_BARRIER_SYNC_ALL, D3D12_BARRIER_ACCESS_COMMON);
         }
         commands->rendering = false;
         commands->color_view_count = 0;
@@ -2585,9 +2596,9 @@ namespace gpu {
             assert(arguments.size >= uint64(command_count - 1) * stride + argument_size && "indirect arguments exceed their memory range");
             Device& device = *commands.state;
             ID3D12CommandSignature* signature = nullptr;
-            for (uint32 index = 0; index < device.indirect_signature_count; ++index)
+            for (uint32 index = 0; index < commands.pool->indirect_signature_count; ++index)
             {
-                const detail::IndirectSignature& cached = device.indirect_signatures[index];
+                const detail::IndirectSignature& cached = commands.pool->indirect_signatures[index];
                 if (cached.type == type && cached.stride == stride)
                 {
                     signature = cached.signature;
@@ -2599,14 +2610,15 @@ namespace gpu {
                 const D3D12_INDIRECT_ARGUMENT_DESC argument{ .Type = type };
                 const D3D12_COMMAND_SIGNATURE_DESC desc{ .ByteStride = stride, .NumArgumentDescs = 1, .pArgumentDescs = &argument };
                 require_hr(device.device->CreateCommandSignature(&desc, nullptr, IID_PPV_ARGS(&signature)));
-                if (device.indirect_signature_count == device.indirect_signature_capacity)
+                if (commands.pool->indirect_signature_count == commands.pool->indirect_signature_capacity)
                 {
-                    device.indirect_signature_capacity = device.indirect_signature_capacity == 0 ? 4 : device.indirect_signature_capacity * 2;
-                    device.indirect_signatures = static_cast<detail::IndirectSignature*>(
-                        realloc(device.indirect_signatures, device.indirect_signature_capacity * sizeof(detail::IndirectSignature))
+                    commands.pool->indirect_signature_capacity =
+                        commands.pool->indirect_signature_capacity == 0 ? 4 : commands.pool->indirect_signature_capacity * 2;
+                    commands.pool->indirect_signatures = static_cast<detail::IndirectSignature*>(
+                        realloc(commands.pool->indirect_signatures, commands.pool->indirect_signature_capacity * sizeof(detail::IndirectSignature))
                     );
                 }
-                device.indirect_signatures[device.indirect_signature_count++] = { .type = type, .stride = stride, .signature = signature };
+                commands.pool->indirect_signatures[commands.pool->indirect_signature_count++] = { .type = type, .stride = stride, .signature = signature };
             }
             if (type != D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH)
                 resolve_graphics_pipeline(commands);
@@ -2667,70 +2679,37 @@ namespace gpu {
     // Submission
     // ---------------------------------------------------------------------------
 
-    namespace {
-
-        void submit_commands(Device& device, Span<CommandBuffer* const> commands, TimelinePoint completion, Swapchain* present) noexcept
-        {
-            if (device.submit_capacity < commands.size)
-            {
-                free(device.submit_lists);
-                device.submit_capacity = commands.size < 8 ? 8 : commands.size;
-                device.submit_lists = static_cast<ID3D12CommandList**>(calloc(device.submit_capacity, sizeof(ID3D12CommandList*)));
-            }
-
-            for (size_t index = 0; index < commands.size; ++index)
-            {
-                CommandBuffer* buffer = commands.data[index];
-                assert(buffer && buffer->recording && buffer->state == &device && "submit received a command buffer that was not begun on this device");
-                assert(!buffer->rendering && "submit received a command buffer with an open render pass");
-                if (present && index + 1 == commands.size)
-                {
-                    Texture* back_buffer = present->textures[present->image_index];
-                    transition_texture(*buffer, *back_buffer, D3D12_BARRIER_LAYOUT_PRESENT, D3D12_BARRIER_SYNC_ALL, D3D12_BARRIER_ACCESS_COMMON);
-                }
-                assert_hr(buffer->list->Close());
-                buffer->recording = false;
-                device.submit_lists[index] = buffer->list;
-            }
-
-            if (commands.size != 0)
-                device.queue->ExecuteCommandLists(static_cast<uint32>(commands.size), device.submit_lists);
-
-            const uint64 retirement = ++device.command_retirement_value;
-            require_hr(device.queue->Signal(device.command_retirement, retirement));
-            for (size_t index = 0; index < commands.size; ++index)
-            {
-                detail::CommandContext* context = commands.data[index]->context;
-                context->active = false;
-                context->retire_value = retirement;
-                assert(device.active_command_buffers != 0);
-                --device.active_command_buffers;
-            }
-            if (completion.semaphore)
-                require_hr(device.queue->Signal(completion.semaphore->fence, completion.value));
-            drain_debug_messages(device.info_queue);
-        }
-
-    } // namespace
-
-    void submit(Span<CommandBuffer* const> commands, TimelinePoint completion) noexcept
+    void submit(Device* device, const SubmitDesc& desc, uint32 queue_index) noexcept
     {
-        assert(commands.size != 0 && commands.data && commands.data[0] && "submit requires at least one command buffer");
-        submit_commands(*commands.data[0]->state, commands, completion, nullptr);
+        assert(device && queue_index < device->caps.queue_count && desc.completion.semaphore);
+        Queue& queue = device->queues[queue_index];
+        if (queue.submit_capacity < desc.commands.size)
+        {
+            queue.submit_capacity = desc.commands.size;
+            queue.submit_lists = static_cast<ID3D12CommandList**>(realloc(queue.submit_lists, queue.submit_capacity * sizeof(ID3D12CommandList*)));
+        }
+        for (size_t index = 0; index < desc.waits.size; ++index)
+            require_hr(queue.queue->Wait(desc.waits.data[index].semaphore->fence, desc.waits.data[index].value));
+        for (size_t index = 0; index < desc.commands.size; ++index)
+        {
+            CommandBuffer* commands = desc.commands.data[index];
+            assert(commands && commands->state == device && commands->ended && !commands->submitted);
+            assert(commands->pool->queue->type == queue.type);
+            queue.submit_lists[index] = commands->list;
+            commands->submitted = true;
+        }
+        if (desc.commands.size)
+            queue.queue->ExecuteCommandLists(static_cast<uint32>(desc.commands.size), queue.submit_lists);
+        require_hr(queue.queue->Signal(desc.completion.semaphore->fence, desc.completion.value));
     }
 
-    void submit_and_present(Device* device, Span<CommandBuffer* const> commands, TimelinePoint completion) noexcept
+    void submit_and_present(Device* device, const SubmitDesc& desc) noexcept
     {
-        assert(device && device->swapchain && "submit_and_present requires a windowed device");
+        assert(device && device->swapchain);
+        submit(device, desc, 0);
         Swapchain* present = device->acquired_swapchain;
-        submit_commands(*device, commands, completion, present);
         if (present && present->swapchain)
-        {
-            const HRESULT result = present->swapchain->Present(1, 0);
-            if (result == DXGI_ERROR_DEVICE_REMOVED || result == DXGI_ERROR_DEVICE_RESET)
-                return;
-            assert_hr(result);
-        }
+            assert_hr(present->swapchain->Present(1, 0));
         device->acquired_swapchain = nullptr;
     }
 
